@@ -127,7 +127,7 @@ class Annotator(QWidget):
         elif k == Qt.Key_Z:
             self._mark_done()
         elif k == Qt.Key_Q:
-            QApplication.instance().quit()
+            sys.exit(0)
         else:
             super().keyPressEvent(ev)
 
