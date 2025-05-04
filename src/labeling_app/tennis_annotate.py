@@ -67,6 +67,7 @@ class AnnotationState:
     video: pathlib.Path
     fps: float
     impacts: List[float] = field(default_factory=list)
+    done: bool = False
 
     # Calculate time step in milliseconds for a given number of frames based on the video's fps.
     def step_ms(self, frames: int) -> int:
@@ -123,6 +124,8 @@ class Annotator(QWidget):
             self._seek_rel(3000)
         elif k == Qt.Key_D:
             self._mark_impact()
+        elif k == Qt.Key_Z:
+            self._mark_done()
         else:
             super().keyPressEvent(ev)
 
@@ -140,20 +143,27 @@ class Annotator(QWidget):
         self._save_json()
         self._update_label()
 
+    # Mark the video as done, then save annotations and update the label.
+    def _mark_done(self):
+        self.st.done = True
+        print(f"[done] {self.st.video.name} marked as done.")
+        self._save_json()
+        self._update_label()
+
     # Update the display label with the current playback time, total video duration, number of impacts, and keybindings.
     def _update_label(self):
         cur_s = self.player.position() / 1000.0
         total_ms = self.player.duration()
         total_s = total_ms / 1000.0 if total_ms else 0
         self.label.setText(
-            f"{cur_s:.3f} s / {total_s:.3f} s   |   impacts: {len(self.st.impacts)}\n"
-            "Key bindings: f: forward 1 frame, s: backward 1 frame, a: backward 5 frames, g: forward 500 ms, h: forward 1 sec, b: forward 3 sec, d: mark impact"
+            f"{cur_s:.3f} s / {total_s:.3f} s   |   impacts: {len(self.st.impacts)}{' (DONE)' if self.st.done else ''}\n"
+            "Key bindings: f: forward 1 frame, s: backward 1 frame, a: backward 5 frames, g: forward 500 ms, h: forward 1 sec, b: forward 3 sec, d: mark impact, z: mark done"
         )
 
     # Save the list of impact annotations to a JSON file located next to the video file.
     def _save_json(self):
         out = self.st.video.with_suffix(".json")
-        json.dump({"video": self.st.video.name, "impacts": self.st.impacts}, open(out, "w"), indent=2)
+        json.dump({"video": self.st.video.name, "impacts": self.st.impacts, "done": self.st.done}, open(out, "w"), indent=2)
 
 ###############################################################################
 # Main
@@ -190,6 +200,15 @@ def main():
         sys.exit("No video files found.")
 
     for v in vids:
+        json_path = v.with_suffix(".json")
+        if json_path.exists():
+            try:
+                data = json.load(open(json_path))
+                if data.get("done") is True:
+                    print(f"\n=== {v.name} is marked as done, skipping. ===")
+                    continue
+            except Exception:
+                pass
         print(f"\n=== {v.name} ===")
         annotate_video(v)
 
