@@ -126,6 +126,8 @@ class Annotator(QWidget):
             self._mark_impact()
         elif k == Qt.Key_Z:
             self._mark_done()
+        elif k == Qt.Key_Q:
+            QApplication.instance().quit()
         else:
             super().keyPressEvent(ev)
 
@@ -157,7 +159,7 @@ class Annotator(QWidget):
         total_s = total_ms / 1000.0 if total_ms else 0
         self.label.setText(
             f"{cur_s:.3f} s / {total_s:.3f} s   |   impacts: {len(self.st.impacts)}{' (DONE)' if self.st.done else ''}\n"
-            "Key bindings: f: forward 1 frame, s: backward 1 frame, a: backward 5 frames, g: forward 500 ms, h: forward 1 sec, b: forward 3 sec, d: mark impact, z: mark done"
+            "Key bindings: f: forward 1 frame, s: backward 1 frame, a: backward 5 frames, g: forward 500 ms, h: forward 1 sec, b: forward 3 sec, d: mark impact, z: mark done, q: quit"
         )
 
     # Save the list of impact annotations to a JSON file located next to the video file.
