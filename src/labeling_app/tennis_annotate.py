@@ -43,6 +43,7 @@ VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv"}
 # Helpers
 ###############################################################################
 
+# Get frames per second from video using ffprobe (defaults to 30 if unavailable).
 def probe_fps(video_path: pathlib.Path) -> float:
     """Return frames‑per‑second using ffprobe (falls back to 30 fps if unknown)."""
     try:
@@ -67,6 +68,7 @@ class AnnotationState:
     fps: float
     impacts: List[float] = field(default_factory=list)
 
+    # Calculate time step in milliseconds for a given number of frames based on the video's fps.
     def step_ms(self, frames: int) -> int:
         return round(frames * 1000 / self.fps)
 
@@ -74,6 +76,7 @@ class AnnotationState:
 # GUI
 ###############################################################################
 class Annotator(QWidget):
+    # Initialize the annotator GUI with the provided annotation state.
     def __init__(self, st: AnnotationState):
         super().__init__()
         self.st = st
@@ -103,6 +106,7 @@ class Annotator(QWidget):
         self.showMaximized()
 
     # ------------------------- Key handling --------------------------- #
+    # Handle key press events and trigger corresponding actions based on key bindings.
     def keyPressEvent(self, ev: QKeyEvent):
         k = ev.key()
         if k == Qt.Key_F:
@@ -123,10 +127,12 @@ class Annotator(QWidget):
             super().keyPressEvent(ev)
 
     # --------------------------- Helpers ------------------------------ #
+    # Seek the video playback position by the specified delta in milliseconds and update the label.
     def _seek_rel(self, delta_ms: int):
         self.player.setPosition(max(0, self.player.position() + delta_ms))
         self._update_label()
 
+    # Record the current video position as an impact, then save annotations and update the label.
     def _mark_impact(self):
         t = round(self.player.position() / 1000.0, 3)
         self.st.impacts.append(t)
@@ -134,10 +140,12 @@ class Annotator(QWidget):
         self._save_json()
         self._update_label()
 
+    # Update the display label with the current playback time and number of impacts.
     def _update_label(self):
         cur_s = self.player.position() / 1000.0
         self.label.setText(f"{cur_s:.3f} s   |   impacts: {len(self.st.impacts)}")
 
+    # Save the list of impact annotations to a JSON file located next to the video file.
     def _save_json(self):
         out = self.st.video.with_suffix(".json")
         json.dump({"video": self.st.video.name, "impacts": self.st.impacts}, open(out, "w"), indent=2)
@@ -146,6 +154,7 @@ class Annotator(QWidget):
 # Main
 ###############################################################################
 
+# Launch the annotation GUI for the specified video file.
 def annotate_video(path: pathlib.Path):
     state = AnnotationState(video=path, fps=probe_fps(path))
 
@@ -160,10 +169,12 @@ def annotate_video(path: pathlib.Path):
     app.exec()
 
 
+# Recursively find video files with supported extensions in the given directory.
 def find_videos(root: pathlib.Path):
     return sorted(p for p in root.rglob("*") if p.suffix.lower() in VIDEO_EXTS)
 
 
+# Parse command-line arguments and execute the annotation process for each video file.
 def main():
     ap = argparse.ArgumentParser(description="Manually annotate tennis ball impacts in videos.")
     ap.add_argument("directory", type=pathlib.Path, help="Directory containing video files")
