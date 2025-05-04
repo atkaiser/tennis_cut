@@ -183,9 +183,22 @@ class Annotator(QWidget):
 # Launch the annotation GUI for the specified video file.
 def annotate_video(path: pathlib.Path):
     state = AnnotationState(video=path, fps=probe_fps(path))
+    json_path = path.with_suffix(".json")
+    if json_path.exists():
+        try:
+            data = json.load(open(json_path))
+            impacts = data.get("impacts", [])
+            if impacts:
+                state.impacts = impacts
+        except Exception:
+            pass
 
     app = QApplication.instance() or QApplication(sys.argv)
-    win = Annotator(state); win.show()
+    win = Annotator(state)
+    if state.impacts:
+        last_impact = state.impacts[-1]
+        win.player.setPosition(int(last_impact * 1000))
+    win.show()
 
     # keep reference so GC can’t delete window
     if not hasattr(app, "_wins"):
