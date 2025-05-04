@@ -140,10 +140,15 @@ class Annotator(QWidget):
         self._save_json()
         self._update_label()
 
-    # Update the display label with the current playback time and number of impacts.
+    # Update the display label with the current playback time, total video duration, number of impacts, and keybindings.
     def _update_label(self):
         cur_s = self.player.position() / 1000.0
-        self.label.setText(f"{cur_s:.3f} s   |   impacts: {len(self.st.impacts)}")
+        total_ms = self.player.duration()
+        total_s = total_ms / 1000.0 if total_ms else 0
+        self.label.setText(
+            f"{cur_s:.3f} s / {total_s:.3f} s   |   impacts: {len(self.st.impacts)}\n"
+            "Key bindings: f: forward 1 frame, s: backward 1 frame, a: backward 5 frames, g: forward 500 ms, h: forward 1 sec, b: forward 3 sec, d: mark impact"
+        )
 
     # Save the list of impact annotations to a JSON file located next to the video file.
     def _save_json(self):
