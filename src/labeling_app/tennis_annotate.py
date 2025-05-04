@@ -9,11 +9,11 @@ Key bindings
 ------------
     f  : forward 1 frame
     s  : backward 1 frame
-    a  : backward 5 frames
+    a  : backward 10 frames
 
-    g  : forward 500 ms
-    h  : forward 1 second
-    b  : forward 3 seconds
+    g  : forward 250 ms
+    h  : forward 500 ms
+    b  : forward 1 second
 
     d  : mark the *current* frame time as an impact
 
@@ -115,13 +115,13 @@ class Annotator(QWidget):
         elif k == Qt.Key_S:
             self._seek_rel(self.st.step_ms(-1))
         elif k == Qt.Key_A:
-            self._seek_rel(self.st.step_ms(-5))
+            self._seek_rel(self.st.step_ms(-10))
         elif k == Qt.Key_G:
-            self._seek_rel(500)
+            self._seek_rel(250)
         elif k == Qt.Key_H:
-            self._seek_rel(1000)
+            self._seek_rel(500)
         elif k == Qt.Key_B:
-            self._seek_rel(3000)
+            self._seek_rel(1000)
         elif k == Qt.Key_D:
             self._mark_impact()
         elif k == Qt.Key_Z:
@@ -160,14 +160,14 @@ class Annotator(QWidget):
         self.label.setText(
             f"{cur_s:.3f} s / {total_s:.3f} s   |   impacts: {len(self.st.impacts)}{' (DONE)' if self.st.done else ''}\n"
             "Key bindings:\n"
-            "a: backward 5 frames\n" \
+            "a: backward 10 frames\n" \
             "s: backward 1 frame\n\n" \
             "f: forward 1 frame\n" \
-            "g: forward 500 ms\n" \
-            "h: forward 1 sec\n" \
-            "b: forward 3 sec\n" \
+            "g: forward 250 ms\n" \
+            "h: forward 500 ms\n" \
+            "b: forward 1 sec\n" \
             "d: mark impact\n" \
-            "z: mark done" \
+            "z: mark done\n" \
             "q: quit"
         )
 
