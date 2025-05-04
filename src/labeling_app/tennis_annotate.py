@@ -126,6 +126,8 @@ class Annotator(QWidget):
             self._mark_impact()
         elif k == Qt.Key_Z:
             self._mark_done()
+        elif k == Qt.Key_V:
+            self._seek_rel(self.st.step_ms(+5))
         elif k == Qt.Key_Q:
             sys.exit(0)
         else:
@@ -163,6 +165,7 @@ class Annotator(QWidget):
             "a: backward 10 frames\n" \
             "s: backward 1 frame\n\n" \
             "f: forward 1 frame\n" \
+            "v: forward 5 frames\n" \
             "g: forward 250 ms\n" \
             "h: forward 500 ms\n" \
             "b: forward 1 sec\n" \
