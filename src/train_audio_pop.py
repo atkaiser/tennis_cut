@@ -13,6 +13,7 @@ from datetime import datetime
 import torch, torchaudio
 import pandas as pd, numpy as np
 from fasttransform.transform import Transform
+import fastai.callback.schedule
 from fastai.data.block  import DataBlock, CategoryBlock, RandomSplitter, TransformBlock
 from fastai.data.core   import Datasets
 from fastai.metrics     import accuracy, F1Score
@@ -92,10 +93,10 @@ def main(csv_path:str, epochs:int, bs:int, lr:float,
     learn = Learner(dls, make_raw1d_cnn(),
                     loss_func=torch.nn.CrossEntropyLoss(),
                     metrics=[accuracy, F1Score()])
-    learn.lr_find = Learner.lr_find.__get__(learn, Learner)
     
-    if lr is None:
-        lr, _ = learn.lr_find()
+    if lr is None:                         # auto‑select LR
+        res = learn.lr_find()              # may be a float *or* a tuple
+        lr  = res[0] if isinstance(res, tuple) else res
 
     print(f"Training {epochs} epochs @ {lr:.2e} ...")
     t0 = time.time()
