@@ -19,6 +19,7 @@ from fastai.data.core   import Datasets
 from fastai.metrics     import accuracy, F1Score
 from fastai.learner     import Learner
 from fastai.torch_core  import TensorBase
+from fastai.interpret import ClassificationInterpretation
 
 # ----------------------------------------------------------------------
 WIN_SEC, SR = 0.25, 48_000
@@ -111,6 +112,9 @@ def main(csv_path:str, epochs:int, bs:int, lr:float,
     hist['epoch']=np.arange(1,len(hist)+1)
     hist.to_csv(out_dir/f"history_{stamp}.csv",index=False)
     print("Model & history saved.")
+    interp = ClassificationInterpretation.from_learner(learn)
+    print("Confusion Matrix:")
+    print(interp.confusion_matrix())
 
 # --------------------------- CLI --------------------------------------
 if __name__ == "__main__":
