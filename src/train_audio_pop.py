@@ -55,6 +55,7 @@ class AddGaussianSNR(Transform):
     order = 90
     def __init__(self, min_snr=10, max_snr=30):
         self.min,self.max=min_snr,max_snr
+        self.split_idx = 0
     def encodes(self, x:TensorAudio):
         snr = torch.empty(1, device=x.device).uniform_(self.min,self.max)
         pwr = x.pow(2).mean()
