@@ -54,7 +54,7 @@ class AddGaussianSNR(Transform):
     def __init__(self, min_snr=10, max_snr=30):
         self.min,self.max=min_snr,max_snr
     def encodes(self, x:TensorAudio):
-        snr = torch.empty(1).uniform_(self.min,self.max)
+        snr = torch.empty(1, device=x.device).uniform_(self.min,self.max)
         pwr = x.pow(2).mean()
         noise = torch.randn_like(x) * torch.sqrt(pwr / (10**(snr/10)))
         return x + noise
