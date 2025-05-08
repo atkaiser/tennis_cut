@@ -92,7 +92,8 @@ def main(csv_path:str, epochs:int, bs:int, lr:float,
     learn = Learner(dls, make_raw1d_cnn(),
                     loss_func=torch.nn.CrossEntropyLoss(),
                     metrics=[accuracy, F1Score()])
-
+    learn.lr_find = learn.__class__.lr_find.__get__(learn, type(learn))
+    
     if lr is None:
         lr, _ = learn.lr_find()
 
