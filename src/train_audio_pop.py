@@ -18,6 +18,7 @@ from fastai.data.core   import Datasets
 from fastai.metrics     import accuracy, F1Score
 from fastai.learner     import Learner
 from fastai.torch_core  import TensorBase
+from fastai.callback.schedule import lr_find
 
 # ----------------------------------------------------------------------
 WIN_SEC, SR = 0.25, 48_000
@@ -92,7 +93,7 @@ def main(csv_path:str, epochs:int, bs:int, lr:float,
     learn = Learner(dls, make_raw1d_cnn(),
                     loss_func=torch.nn.CrossEntropyLoss(),
                     metrics=[accuracy, F1Score()])
-    learn.lr_find = learn.__class__.lr_find.__get__(learn, type(learn))
+    learn.lr_find = lr_find.__get__(learn, type(learn))
     
     if lr is None:
         lr, _ = learn.lr_find()
