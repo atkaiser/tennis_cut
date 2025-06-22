@@ -2,12 +2,12 @@
 
 Scripts for preparing the dataset and training the audio impact model.
 
-## make_windows.py
+## prepare_audio_windows.py
 Extracts labelled audio windows from annotated videos and writes a CSV used for training.
 Example:
 
 ```bash
-python make_windows.py videos/ wav/ meta/train_all.csv --neg-per-pos 3 --far-neg-per-pos 1
+python prepare_audio_windows.py videos/ wav/ meta/train_all.csv --neg-per-pos 3 --far-neg-per-pos 1
 ```
 
 This creates 0.25 s windows around each labelled impact along with near and far negative samples. Audio is extracted to the given `wav/` directory.
