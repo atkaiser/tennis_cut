@@ -7,15 +7,17 @@ Run, e.g.:
     python train_audio_pop.py meta/train_all.csv --epochs 15 --out-dir models
 """
 
-import argparse, time, pathlib
+import argparse
+import time
+import pathlib
 from datetime import datetime
 
-import torch, torchaudio
-import pandas as pd, numpy as np
+import torch
+import torchaudio
+import pandas as pd
+import numpy as np
 from fasttransform.transform import Transform
-import fastai.callback.schedule
 from fastai.data.block  import DataBlock, CategoryBlock, RandomSplitter, TransformBlock
-from fastai.data.core   import Datasets
 from fastai.metrics     import accuracy, F1Score
 from fastai.learner     import Learner
 from fastai.torch_core  import TensorBase
@@ -26,7 +28,9 @@ from fastai.losses import CrossEntropyLossFlat
 WIN_SEC, SR = 0.25, 48_000
 WIN_SAMP    = int(WIN_SEC * SR)
 
-class TensorAudio(TensorBase): "A 1‑channel audio tensor"; pass
+class TensorAudio(TensorBase):
+    """A 1-channel audio tensor"""
+    pass
 
 # --------------------------- Transforms -------------------------------
 class AudioLoad(Transform):
@@ -46,7 +50,9 @@ class DCOffset(Transform):
 class PreEmphasis(Transform):
     def __init__(self, α=0.97): self.a = α
     def encodes(self, x:TensorAudio):
-        x = x.clone(); x[...,1:] -= self.a * x[...,:-1]; return x
+        x = x.clone()
+        x[...,1:] -= self.a * x[...,:-1]
+        return x
 
 class RmsNorm(Transform):
     def encodes(self, x:TensorAudio):
@@ -81,7 +87,8 @@ def make_raw1d_cnn():
 # --------------------------- main -------------------------------------
 def main(csv_path:str, epochs:int, bs:int, lr:float,
          out_dir:str, device:str):
-    out_dir = pathlib.Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     df      = pd.read_csv(csv_path)
 
     dblock = DataBlock(

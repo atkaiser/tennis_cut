@@ -54,7 +54,8 @@ def probe_fps(video_path: pathlib.Path) -> float:
             str(video_path),
         ], text=True).strip()
         if "/" in out:
-            num, den = map(int, out.split("/")); return num / den
+            num, den = map(int, out.split("/"))
+            return num / den
         return float(out)
     except Exception:
         return 30.0
