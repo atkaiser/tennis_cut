@@ -1,24 +1,38 @@
 #!/usr/bin/env python3
-"""
-make_windows.py  –  Prep fast‑ai dataset from labelled videos.
+"""prepare_audio_windows.py
+---------------------------
+Generate training windows for the audio pop detector.
 
-Usage
------
-python make_windows.py  videos/  wav/  meta/train_all.csv  \
-       --neg-per-pos 3  --far-neg-per-pos 1
+The script expects a directory of labelled tennis videos. For each ``video``
+file there should be a companion ``.json`` file containing an ``"impacts"``
+array with the impact timestamps (in seconds). ``ffmpeg`` is used to extract
+the audio track at 48 kHz mono and short windows around each timestamp are
+written to a CSV file. Additional negative windows are sampled near and far
+from each impact to balance the dataset.
+
+Usage example::
+
+   python prepare_audio_windows.py videos/ wav/ meta/train_all.csv \
+       --neg-per-pos 3 --far-neg-per-pos 1
 """
 
-import argparse, csv, json, os, random, subprocess, sys, pathlib
+import argparse
+import csv
+import json
+import pathlib
+import random
+import subprocess
+import sys
 from typing import List, Tuple
 
 # -----------------------  constants / defaults  -----------------------
-WIN_SEC          = 0.25         # window length  (s)
-SR               = 48_000       # sample‑rate     (Hz)
-NEG_PER_POS      = 3            # near negatives  per positive
-FAR_NEG_PER_POS  = 1            # far  negatives  per positive
-NEAR_MIN_OFF     = 0.15         # 0.15‑0.25  s from impact
-FAR_MIN_GAP      = 1.0          # ≥1.0 s  away  (far negatives)
-FAR_MAX_GAP      = 2.0          # ≤2.0 s  for far negative sampling
+WIN_SEC          = 0.25         # length of each training window in seconds
+SR               = 48_000       # audio sample rate used for extraction
+NEG_PER_POS      = 3            # number of near-negative samples per positive
+FAR_NEG_PER_POS  = 1            # number of far-negative samples per positive
+NEAR_MIN_OFF     = 0.15         # near negatives are at least this far from impact
+FAR_MIN_GAP      = 1.0          # far negatives start at least this many seconds away
+FAR_MAX_GAP      = 2.0          # and at most this many seconds away
 
 # ----------------------------------------------------------------------
 def extract_wav(mp4_path: pathlib.Path, wav_path: pathlib.Path) -> None:
@@ -46,19 +60,28 @@ def probe_duration(path: pathlib.Path) -> float:
     return float(out)
 
 def sample_near_neg(t: float) -> float:
+    """Return a timestamp slightly before or after ``t`` for a near negative."""
     off = random.uniform(NEAR_MIN_OFF, WIN_SEC/2)
     return t + random.choice([-off, off])
 
 def sample_far_neg(t: float) -> float:
+    """Return a timestamp well away from ``t`` for a far negative."""
     gap = random.uniform(FAR_MIN_GAP, FAR_MAX_GAP)
     return t + random.choice([-gap, gap])
 
 def row(wav: pathlib.Path, start: float, label: str) -> Tuple[str, float, str]:
+    """Format a CSV row describing an audio window."""
     return (str(wav), round(start, 3), label)
 
 # ----------------------------------------------------------------------
 def main(videos_dir: str, wav_dir: str, out_csv: str,
          neg_per_pos: int, far_neg_per_pos: int) -> None:
+    """Process ``videos_dir`` and write a window CSV to ``out_csv``.
+
+    For every ``.mp4``/``.mov`` file the function loads the corresponding JSON
+    labels, extracts the audio to ``wav_dir`` and samples positive, near
+    negative and far negative windows.
+    """
 
     videos = sorted(pathlib.Path(videos_dir).glob("*.MOV")) + \
              sorted(pathlib.Path(videos_dir).glob("*.mp4")) + \
@@ -105,14 +128,35 @@ def main(videos_dir: str, wav_dir: str, out_csv: str,
 
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("videos_dir")
-    ap.add_argument("wav_dir"),
-    ap.add_argument("out_csv")
-    ap.add_argument("--neg-per-pos",  type=int, default=NEG_PER_POS,
-                    help="near negatives per positive (default 3)")
-    ap.add_argument("--far-neg-per-pos", type=int, default=FAR_NEG_PER_POS,
-                    help="far  negatives per positive (default 1)")
+    ap = argparse.ArgumentParser(
+        description="Extract audio windows from labelled videos and write a CSV"
+    )
+    ap.add_argument(
+        "videos_dir",
+        help="directory with labelled video files (.mp4/.MOV) and matching JSON",
+    )
+    ap.add_argument(
+        "wav_dir",
+        help="where to store extracted 48 kHz mono wav files",
+    )
+    ap.add_argument(
+        "out_csv",
+        help="path to CSV listing wav paths, start times and labels",
+    )
+    ap.add_argument(
+        "--neg-per-pos",
+        type=int,
+        default=NEG_PER_POS,
+        metavar="N",
+        help="number of near negatives to sample per positive",
+    )
+    ap.add_argument(
+        "--far-neg-per-pos",
+        type=int,
+        default=FAR_NEG_PER_POS,
+        metavar="N",
+        help="number of far negatives to sample per positive",
+    )
     args = ap.parse_args()
     try:
         main(args.videos_dir, args.wav_dir, args.out_csv,
