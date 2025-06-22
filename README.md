@@ -8,3 +8,16 @@ This repository contains tooling for extracting tennis swing clips from raw matc
 - `src/train_pop_detector/` – scripts for preparing data and training the audio classifier.
 
 See the README files inside those folders for usage examples.
+
+## Linting
+
+The project uses [Ruff](https://docs.astral.sh/ruff/) for linting. To check the
+code locally run:
+
+```bash
+pip install -e .
+ruff .
+```
+
+Ruff runs automatically on pull requests to the `main` branch via GitHub
+Actions.
