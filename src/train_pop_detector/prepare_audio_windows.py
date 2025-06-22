@@ -10,10 +10,9 @@ the audio track at 48 kHz mono and short windows around each timestamp are
 written to a CSV file. Additional negative windows are sampled near and far
 from each impact to balance the dataset.
 
-Usage example::
+Usage example (if run from the top of the project):
 
-   python prepare_audio_windows.py videos/ wav/ meta/train_all.csv \
-       --neg-per-pos 3 --far-neg-per-pos 1
+   python prepare_audio_windows.py
 """
 
 import argparse
@@ -74,8 +73,12 @@ def row(wav: pathlib.Path, start: float, label: str) -> Tuple[str, float, str]:
     return (str(wav), round(start, 3), label)
 
 # ----------------------------------------------------------------------
-def main(videos_dir: str, wav_dir: str, out_csv: str,
-         neg_per_pos: int, far_neg_per_pos: int) -> None:
+def main(
+        videos_dir: str,
+        wav_dir: str,
+        out_csv: str,
+        neg_per_pos: int,
+        far_neg_per_pos: int) -> None:
     """Process ``videos_dir`` and write a window CSV to ``out_csv``.
 
     For every ``.mp4``/``.mov`` file the function loads the corresponding JSON
@@ -92,7 +95,7 @@ def main(videos_dir: str, wav_dir: str, out_csv: str,
     for mp4 in videos:
         json_path = mp4.with_suffix(".json")
         if not json_path.exists():
-            print(f"⚠  No JSON for {mp4.name}; skipping.")
+            print(f"No JSON for {mp4.name}; skipping.")
             continue
 
         wav_path  = pathlib.Path(wav_dir) / f"{mp4.stem}.wav"
@@ -132,15 +135,21 @@ if __name__ == "__main__":
         description="Extract audio windows from labelled videos and write a CSV"
     )
     ap.add_argument(
-        "videos_dir",
+        "--videos_dir",
+        type=str,
+        default="videos",
         help="directory with labelled video files (.mp4/.MOV) and matching JSON",
     )
     ap.add_argument(
-        "wav_dir",
+        "--wav_dir",
+        type=str,
+        default="wavs",
         help="where to store extracted 48 kHz mono wav files",
     )
     ap.add_argument(
-        "out_csv",
+        "--out_csv",
+        type=str,
+        default="meta/labled_windows.csv",
         help="path to CSV listing wav paths, start times and labels",
     )
     ap.add_argument(
@@ -159,7 +168,11 @@ if __name__ == "__main__":
     )
     args = ap.parse_args()
     try:
-        main(args.videos_dir, args.wav_dir, args.out_csv,
-             args.neg_per_pos, args.far_neg_per_pos)
+        main(
+            args.videos_dir,
+            args.wav_dir,
+            args.out_csv,
+            args.neg_per_pos,
+            args.far_neg_per_pos)
     except subprocess.CalledProcessError as e:
         sys.exit(f"ffmpeg/ffprobe failed: {e}")
