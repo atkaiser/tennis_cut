@@ -22,7 +22,7 @@ FAR_MAX_GAP      = 2.0          # ≤2.0 s  for far negative sampling
 
 # ----------------------------------------------------------------------
 def extract_wav(mp4_path: pathlib.Path, wav_path: pathlib.Path) -> None:
-    """Create wav_path if missing; 48 kHz mono PCM."""
+    """Create wav_path if missing; 48 kHz mono PCM."""
     if wav_path.exists():
         return
     wav_path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,7 +106,9 @@ def main(videos_dir: str, wav_dir: str, out_csv: str,
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("videos_dir"), ap.add_argument("wav_dir"), ap.add_argument("out_csv")
+    ap.add_argument("videos_dir")
+    ap.add_argument("wav_dir"),
+    ap.add_argument("out_csv")
     ap.add_argument("--neg-per-pos",  type=int, default=NEG_PER_POS,
                     help="near negatives per positive (default 3)")
     ap.add_argument("--far-neg-per-pos", type=int, default=FAR_NEG_PER_POS,
