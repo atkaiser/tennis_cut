@@ -20,6 +20,7 @@ from fastai.metrics     import accuracy, F1Score
 from fastai.learner     import Learner
 from fastai.torch_core  import TensorBase
 from fastai.interpret import ClassificationInterpretation
+from fastai.losses import CrossEntropyLossFlat
 
 # ----------------------------------------------------------------------
 WIN_SEC, SR = 0.25, 48_000
@@ -91,9 +92,10 @@ def main(csv_path:str, epochs:int, bs:int, lr:float,
         batch_tfms=[AddGaussianSNR()]
     )
     dls = dblock.dataloaders(df, bs=bs, device=device)
+    pos_w = torch.tensor([1., 4.], device=device)   # class weights
 
     learn = Learner(dls, make_raw1d_cnn(),
-                    loss_func=torch.nn.CrossEntropyLoss(),
+                    loss_func=CrossEntropyLossFlat(weight=pos_w),
                     metrics=[accuracy, F1Score()])
     
     if lr is None:                         # auto‑select LR
