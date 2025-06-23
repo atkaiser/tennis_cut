@@ -157,7 +157,7 @@ def main(csv_path:str, epochs:int, bs:int, lr:float,
         ]
     )
     dls = dblock.dataloaders(df, bs=bs, device=device)
-    pos_w = torch.tensor([1., 4.], device=device)   # class weights
+    pos_w = torch.tensor([1., 2.], device=device)   # class weights
 
     learn = Learner(dls, make_raw1d_cnn(),
                     loss_func=CrossEntropyLossFlat(weight=pos_w),
