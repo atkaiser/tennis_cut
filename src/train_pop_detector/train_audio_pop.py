@@ -73,6 +73,55 @@ class AddGaussianSNR(Transform):
         noise = torch.randn_like(x) * torch.sqrt(pwr / (10**(snr/10)))
         return x + noise
 
+class RandomGain(Transform):
+    """Apply a random gain between `min_db` and `max_db`."""
+    order = 90
+
+    def __init__(self, min_db: float = -6.0, max_db: float = 6.0) -> None:
+        self.min, self.max = min_db, max_db
+        self.split_idx = 0
+
+    def encodes(self, x: TensorAudio) -> TensorAudio:
+        db = torch.empty(1, device=x.device).uniform_(self.min, self.max)
+        gain = torch.pow(10.0, db / 20.0)
+        return x * gain
+
+
+class WhiteNoiseSegment(Transform):
+    """Inject white noise into a random short segment."""
+    order = 90
+
+    def __init__(self, seg_ms: int = 15, amp: float = 0.02) -> None:
+        self.seg_samples = int((seg_ms / 1000) * SR)
+        self.amp = amp
+        self.split_idx = 0
+
+    def encodes(self, x: TensorAudio) -> TensorAudio:
+        if self.seg_samples <= 0 or self.seg_samples >= x.shape[-1]:
+            return x
+        start = torch.randint(0, x.shape[-1] - self.seg_samples, (1,))
+        noise = torch.randn(self.seg_samples, device=x.device) * self.amp
+        x = x.clone()
+        x[..., start : start + self.seg_samples] += noise
+        return x
+
+
+class TimeMask(Transform):
+    """Zero out a random time span inside the audio."""
+    order = 90
+
+    def __init__(self, mask_ms: int = 30) -> None:
+        self.mask_samples = int((mask_ms / 1000) * SR)
+        self.split_idx = 0
+
+    def encodes(self, x: TensorAudio) -> TensorAudio:
+        if self.mask_samples <= 0 or self.mask_samples >= x.shape[-1]:
+            return x
+        start = torch.randint(0, x.shape[-1] - self.mask_samples, (1,))
+        x = x.clone()
+        x[..., start : start + self.mask_samples] = 0
+        return x
+
 # Helper block so DataBlock is clean
 def AudioBlock():
     return TransformBlock(type_tfms=[AudioLoad(),
@@ -100,7 +149,12 @@ def main(csv_path:str, epochs:int, bs:int, lr:float,
         get_x    = lambda r: r,                 # row passed to AudioLoad
         get_y    = lambda r: r['label'],
         splitter = RandomSplitter(0.2, seed=42),
-        batch_tfms=[AddGaussianSNR()]
+        batch_tfms=[
+            RandomGain(),
+            WhiteNoiseSegment(),
+            TimeMask(),
+            AddGaussianSNR(),
+        ]
     )
     dls = dblock.dataloaders(df, bs=bs, device=device)
     pos_w = torch.tensor([1., 4.], device=device)   # class weights
