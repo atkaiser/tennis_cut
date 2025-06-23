@@ -23,6 +23,10 @@ from fastai.learner     import Learner
 from fastai.torch_core  import TensorBase
 from fastai.interpret import ClassificationInterpretation
 from fastai.losses import CrossEntropyLossFlat
+# Importing these patches registers the lr_find and fit_one_cycle methods on
+# fastai's Learner class, so even if they aren't directly used, they are still needed
+from fastai.callback.schedule import lr_find, fit_one_cycle  # noqa: F401
+# import matplotlib.pyplot as plt
 
 # ----------------------------------------------------------------------
 WIN_SEC, SR = 0.25, 48_000
@@ -34,7 +38,7 @@ class TensorAudio(TensorBase):
 
 # --------------------------- Transforms -------------------------------
 class AudioLoad(Transform):
-    "Load a 0.25 s mono window starting at `row.start`"
+    "Load a 0.25 s mono window starting at `row.start`"
     def encodes(self, row):
         wav_path, start = row.wav_path, float(row.start)
         s0 = int(start * SR)
@@ -125,6 +129,9 @@ def main(csv_path:str, epochs:int, bs:int, lr:float,
     interp = ClassificationInterpretation.from_learner(learn)
     print("Confusion Matrix:")
     print(interp.confusion_matrix())
+    # If you want to graph the confusion matrix:
+    # interp.plot_confusion_matrix()
+    # plt.show()
 
 # --------------------------- CLI --------------------------------------
 if __name__ == "__main__":
