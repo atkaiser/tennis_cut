@@ -18,4 +18,4 @@ jobs:
           pip install -e .
       - name: Run ruff
         run: |
-          ruff .
+          ruff check .
