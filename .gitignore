@@ -2,7 +2,8 @@
 
 .DS_Store
 
-meta
-videos
-test_videos
-wavs
+# Ignore data directories
+/meta/
+/videos/
+/test_videos/
+/wavs/
