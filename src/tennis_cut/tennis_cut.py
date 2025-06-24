@@ -35,37 +35,51 @@ class Swing:
 
 
 class PopDetector:
-    """Very small audio peak detector placeholder.
+    """Audio impact detector using the trained CNN."""
 
-    The real implementation would load a trained PyTorch model. For now we simply
-    look for RMS peaks in 0.25 s windows using a stride of 0.05 s.
-    """
+    def __init__(self, model_path: Path, stride_s: float = 0.05, device: str | None = None) -> None:
+        import torch
+        from fastai.learner import load_learner
 
-    def __init__(self, stride_s: float = 0.05) -> None:
         self.stride_s = stride_s
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        learner = load_learner(model_path, cpu=self.device.type == "cpu")
+        self.model = learner.model.to(self.device)
+        self.model.eval()
+
+    @staticmethod
+    def _preprocess(batch):
+        batch = batch - batch.mean(dim=1, keepdim=True)
+        batch[:, 1:] -= 0.97 * batch[:, :-1]
+        batch = batch / (batch.pow(2).mean(dim=1, keepdim=True).sqrt() + 1e-6)
+        return batch
 
     def find_impacts(self, wav_path: Path) -> List[float]:
+        import torch
+
         waveform, sr = torchaudio.load(str(wav_path))
         if sr != 48_000:
             waveform = torchaudio.functional.resample(waveform, sr, 48_000)
             sr = 48_000
-        samples = waveform.shape[1]
+
         window = int(sr * 0.25)
         stride = int(sr * self.stride_s)
-        if samples < window:
+        if waveform.shape[1] < window:
             return []
-        unfolded = waveform.squeeze(0).unfold(0, window, stride)
-        rms = (unfolded ** 2).mean(dim=1).sqrt()
-        thresh = rms.mean() + 2 * rms.std()
+
+        segments = waveform.unfold(1, window, stride).squeeze(0).transpose(0, 1)
+        segments = self._preprocess(segments)
+
+        with torch.no_grad():
+            logits = self.model(segments.unsqueeze(1).to(self.device))
+            probs = torch.softmax(logits, dim=1)[:, 1]
+
         peaks: List[float] = []
-        for i in range(len(rms)):
-            if rms[i] < thresh:
-                continue
-            prev = rms[i - 1] if i > 0 else 0.0
-            next_ = rms[i + 1] if i + 1 < len(rms) else 0.0
-            if rms[i] >= prev and rms[i] >= next_:
+        for i, p in enumerate(probs):
+            if float(p) > 0.5:
                 center = i * self.stride_s + 0.125
                 peaks.append(float(center))
+
         _LOG.info("Detected %d audio peaks", len(peaks))
         return peaks
 
@@ -74,6 +88,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Extract tennis swings from video")
     p.add_argument("input", help="Input video file")
     p.add_argument("-o", "--output-dir", default="./out/", help="Output directory")
+    p.add_argument("--model", required=True, help="Path to trained audio model")
     p.add_argument("--clips", action="store_true", help="Export each swing separately")
     p.add_argument("--slowmo", choices=["0.5", "0.25"], nargs="*", help="Generate slow-motion version(s)")
     p.add_argument("--metadata", action="store_true", help="Write JSON manifest")
@@ -251,7 +266,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         tmpdir_path = Path(tmpdir)
         wav_path = tmpdir_path / "audio.wav"
         extract_audio(input_path, wav_path)
-        detector = PopDetector()
+        detector = PopDetector(Path(args.model))
         impact_times = detector.find_impacts(wav_path)
         candidate_windows = [(t - 1.20, t + 0.70) for t in impact_times]
         merged = merge_windows(candidate_windows)
