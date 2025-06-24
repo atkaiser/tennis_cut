@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Sequence
 
-import ffmpeg
+import subprocess
 import torchaudio
 
 
@@ -101,10 +101,24 @@ def check_ffmpeg() -> None:
 
 def probe(video: Path) -> dict:
     try:
-        meta = ffmpeg.probe(str(video))
-    except ffmpeg.Error as e:
-        print(e.stderr.decode(), file=sys.stderr)
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_streams",
+                "-of",
+                "json",
+                str(video),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print(e.stderr, file=sys.stderr)
         raise
+    meta = json.loads(result.stdout)
     v_stream = next(s for s in meta["streams"] if s["codec_type"] == "video")
     a_stream = next(s for s in meta["streams"] if s["codec_type"] == "audio")
     fps_parts = v_stream["r_frame_rate"].split("/")
@@ -117,11 +131,21 @@ def probe(video: Path) -> dict:
 
 
 def extract_audio(video: Path, wav_path: Path) -> None:
-    (
-        ffmpeg.input(str(video))
-        .output(str(wav_path), ac=1, ar=48_000)
-        .overwrite_output()
-        .run(quiet=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-i",
+            str(video),
+            "-ac",
+            "1",
+            "-ar",
+            "48000",
+            str(wav_path),
+            "-y",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -140,11 +164,23 @@ def merge_windows(windows: List[tuple[float, float]]) -> List[tuple[float, float
 
 
 def cut_swing(video: Path, start: float, end: float, out_path: Path) -> None:
-    (
-        ffmpeg.input(str(video))
-        .output(str(out_path), ss=start, to=end, c="copy")
-        .overwrite_output()
-        .run(quiet=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-i",
+            str(video),
+            "-ss",
+            str(start),
+            "-to",
+            str(end),
+            "-c",
+            "copy",
+            str(out_path),
+            "-y",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -155,12 +191,22 @@ def slowmo_video(src: Path, dst: Path, factor: float) -> None:
     else:  # 0.25
         v_filter = "setpts=4.0*PTS"
         a_filter = "atempo=0.5,atempo=0.5"
-    (
-        ffmpeg.input(str(src))
-        .filter_("fps", fps=30)  # ensure compatibility
-        .output(str(dst), **{"filter:v": v_filter, "filter:a": a_filter})
-        .overwrite_output()
-        .run(quiet=True)
+    vf = f"fps=30,{v_filter}"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-i",
+            str(src),
+            "-vf",
+            vf,
+            "-af",
+            a_filter,
+            str(dst),
+            "-y",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -240,11 +286,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             with open(concat_file, "w") as fh:
                 for p in clip_paths:
                     fh.write(f"file '{p}'\n")
-            (
-                ffmpeg.input(str(concat_file), format="concat", safe=0)
-                .output(str(stitched_path), c="copy")
-                .overwrite_output()
-                .run(quiet=True)
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(concat_file),
+                    "-c",
+                    "copy",
+                    str(stitched_path),
+                    "-y",
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
 
         if args.slowmo:
