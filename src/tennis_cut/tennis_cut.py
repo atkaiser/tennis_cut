@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
-"""CLI tool for extracting tennis swings from a video.
-
-This first version implements the pipeline from ``spec.md`` section 4 but skips
-vision-based verification and cropping. Candidate swing windows are generated
-purely from audio peaks.
+"""
+CLI tool for extracting tennis swings from a video.
 """
 
 from __future__ import annotations
@@ -276,9 +273,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if not swings:
             _LOG.warning("No swings detected")
-            if args.metadata:
-                with open(meta_path, "w") as fh:
-                    json.dump({"video": str(input_path.name), "sample_rate": 48_000, "swings": []}, fh, indent=2)
             return 0
 
         clip_paths: List[Path] = []
@@ -345,10 +339,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except Exception:  # pragma: no cover - emergency guard
-        with open("tennis_cut_error.log", "w") as fh:
-            logging.exception("Unhandled error", exc_info=True, file=fh)
-        sys.exit(99)
+    main()
 
