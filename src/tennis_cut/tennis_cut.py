@@ -43,6 +43,21 @@ POST_CONTACT_BUFFER = 0.70
 _LOG = logging.getLogger(__name__)
 
 
+def run_cmd(cmd: Sequence[str]) -> None:
+    """Run a subprocess and raise with logged output on failure."""
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        joined = " ".join(cmd)
+        _LOG.error("Command failed (%s): %s", result.returncode, joined)
+        if result.stdout:
+            _LOG.error(result.stdout.strip())
+        if result.stderr:
+            _LOG.error(result.stderr.strip())
+        raise subprocess.CalledProcessError(
+            result.returncode, cmd, result.stdout, result.stderr
+        )
+
+
 @dataclass
 class Swing:
     index: int
@@ -176,7 +191,7 @@ def probe(video: Path) -> dict:
 
 
 def extract_audio(video: Path, wav_path: Path) -> None:
-    subprocess.run(
+    run_cmd(
         [
             "ffmpeg",
             "-i",
@@ -187,16 +202,13 @@ def extract_audio(video: Path, wav_path: Path) -> None:
             "48000",
             str(wav_path),
             "-y",
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        ]
     )
 
 
 
 def cut_swing(video: Path, start: float, end: float, out_path: Path) -> None:
-    subprocess.run(
+    run_cmd(
         [
             "ffmpeg",
             "-i",
@@ -209,10 +221,7 @@ def cut_swing(video: Path, start: float, end: float, out_path: Path) -> None:
             "copy",
             str(out_path),
             "-y",
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        ]
     )
 
 
@@ -224,7 +233,7 @@ def slowmo_video(src: Path, dst: Path, factor: float) -> None:
         v_filter = f"setpts={SETPTS_QUARTER}*PTS"
         a_filter = f"atempo={ATEMPO_HALF},atempo={ATEMPO_HALF}"
     vf = f"fps={SLOWMO_FPS},{v_filter}"
-    subprocess.run(
+    run_cmd(
         [
             "ffmpeg",
             "-i",
@@ -235,10 +244,7 @@ def slowmo_video(src: Path, dst: Path, factor: float) -> None:
             a_filter,
             str(dst),
             "-y",
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        ]
     )
 
 
@@ -317,8 +323,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             concat_file = tmpdir_path / "concat.txt"
             with open(concat_file, "w") as fh:
                 for p in clip_paths:
-                    fh.write(f"file '{p}'\n")
-            subprocess.run(
+                    fh.write(f"file '{p.resolve()}'\n")
+            run_cmd(
                 [
                     "ffmpeg",
                     "-f",
@@ -331,10 +337,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "copy",
                     str(stitched_path),
                     "-y",
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                ]
             )
 
         if args.slowmo:
