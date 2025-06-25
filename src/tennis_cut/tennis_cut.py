@@ -20,6 +20,26 @@ import subprocess
 import torchaudio
 
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+DEFAULT_STRIDE_S = 0.05
+SAMPLE_RATE = 48_000
+WINDOW_DURATION = 0.25
+PEAK_THRESHOLD = 0.5
+PEAK_OFFSET = 0.125
+PEAK_MIN_SEPARATION = 2.0
+BATCH_SIZE = 128
+SLOWMO_HALF = 0.5
+SLOWMO_QUARTER = 0.25
+SETPTS_HALF = 2.0
+SETPTS_QUARTER = 4.0
+ATEMPO_HALF = 0.5
+SLOWMO_FPS = 30
+PRE_CONTACT_BUFFER = 1.20
+POST_CONTACT_BUFFER = 0.70
+
+
 _LOG = logging.getLogger(__name__)
 
 
@@ -35,7 +55,7 @@ class Swing:
 class PopDetector:
     """Audio impact detector using the trained CNN."""
 
-    def __init__(self, model_path: Path, stride_s: float = 0.05, device: str | None = None) -> None:
+    def __init__(self, model_path: Path, stride_s: float = DEFAULT_STRIDE_S, device: str | None = None) -> None:
         import torch
         from fastai.learner import load_learner
 
@@ -55,18 +75,18 @@ class PopDetector:
         import pandas as pd
 
         waveform, sr = torchaudio.load(str(wav_path))
-        if sr != 48_000:
-            waveform = torchaudio.functional.resample(waveform, sr, 48_000)
-            sr = 48_000
+        if sr != SAMPLE_RATE:
+            waveform = torchaudio.functional.resample(waveform, sr, SAMPLE_RATE)
+            sr = SAMPLE_RATE
 
-        window = int(sr * 0.25)
+        window = int(sr * WINDOW_DURATION)
         stride = int(sr * self.stride_s)
         if waveform.shape[1] < window:
             return []
 
         starts = [sample_start / sr for sample_start in range(0, waveform.shape[1] - window + 1, stride)]
         df = pd.DataFrame({"wav_path": str(wav_path), "start": starts})
-        dl = self.learner.dls.test_dl(df, bs=128)
+        dl = self.learner.dls.test_dl(df, bs=BATCH_SIZE)
 
         with torch.no_grad():
             preds, _ = self.learner.get_preds(dl=dl, reorder=False)
@@ -75,8 +95,8 @@ class PopDetector:
         candidates: List[tuple[float, float]] = []
         for i, p in enumerate(probs):
             score = float(p)
-            if score > 0.5:
-                center = i * self.stride_s + 0.125
+            if score > PEAK_THRESHOLD:
+                center = i * self.stride_s + PEAK_OFFSET
                 candidates.append((center, score))
 
         # Non-max suppression: only keep the highest-scoring peak in any
@@ -84,7 +104,7 @@ class PopDetector:
         candidates.sort(key=lambda c: c[1], reverse=True)
         kept: List[tuple[float, float]] = []
         for timestamp, score in candidates:
-            if all(abs(timestamp - kept_timestamp) >= 2.0 for kept_timestamp, _ in kept):
+            if all(abs(timestamp - kept_timestamp) >= PEAK_MIN_SEPARATION for kept_timestamp, _ in kept):
                 kept.append((timestamp, score))
         kept.sort(key=lambda c: c[0])
 
@@ -100,7 +120,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument("-o", "--output-dir", default="./out/", help="Output directory")
     p.add_argument("--model", required=True, help="Path to trained audio model")
     p.add_argument("--clips", action="store_true", help="Export each swing separately")
-    p.add_argument("--slowmo", choices=["0.5", "0.25"], nargs="*", help="Generate slow-motion version(s)")
+    p.add_argument("--slowmo", choices=[str(SLOWMO_HALF), str(SLOWMO_QUARTER)], nargs="*", help="Generate slow-motion version(s)")
     p.add_argument("--metadata", action="store_true", help="Write JSON manifest")
     p.add_argument("--no-stitch", action="store_true", help="Skip the merged video")
     p.add_argument("--tracker", action="store_true", help="Use SORT tracker (unused)")
@@ -197,13 +217,13 @@ def cut_swing(video: Path, start: float, end: float, out_path: Path) -> None:
 
 
 def slowmo_video(src: Path, dst: Path, factor: float) -> None:
-    if factor == 0.5:
-        v_filter = "setpts=2.0*PTS"
-        a_filter = "atempo=0.5"
-    else:  # 0.25
-        v_filter = "setpts=4.0*PTS"
-        a_filter = "atempo=0.5,atempo=0.5"
-    vf = f"fps=30,{v_filter}"
+    if factor == SLOWMO_HALF:
+        v_filter = f"setpts={SETPTS_HALF}*PTS"
+        a_filter = f"atempo={ATEMPO_HALF}"
+    else:  # SLOWMO_QUARTER
+        v_filter = f"setpts={SETPTS_QUARTER}*PTS"
+        a_filter = f"atempo={ATEMPO_HALF},atempo={ATEMPO_HALF}"
+    vf = f"fps={SLOWMO_FPS},{v_filter}"
     subprocess.run(
         [
             "ffmpeg",
@@ -265,10 +285,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         extract_audio(input_path, wav_path)
         detector = PopDetector(Path(args.model))
         impact_times = detector.find_impacts(wav_path)
-        candidate_windows = [(t - 1.20, t + 0.70) for t in impact_times]
+        candidate_windows = [
+            (t - PRE_CONTACT_BUFFER, t + POST_CONTACT_BUFFER) for t in impact_times
+        ]
         swings: List[Swing] = []
         for i, (start, end) in enumerate(candidate_windows):
-            swings.append(Swing(index=i, start=start, end=end, contact=(start + 1.20)))
+            swings.append(
+                Swing(index=i, start=start, end=end, contact=(start + PRE_CONTACT_BUFFER))
+            )
 
         if not swings:
             _LOG.warning("No swings detected")
@@ -332,7 +356,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for sw in swings
             ]
             with open(meta_path, "w") as fh:
-                json.dump({"video": str(input_path.name), "sample_rate": 48_000, "swings": records}, fh, indent=2)
+                json.dump({"video": str(input_path.name), "sample_rate": SAMPLE_RATE, "swings": records}, fh, indent=2)
 
     return 0
 
