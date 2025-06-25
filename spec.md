@@ -6,8 +6,9 @@
   * Separate per-swing clips instead of a single file.
   * 0.5× / 0.25× slow-motion versions.
   * JSON metadata file describing each swing.
-* “Swing” = from **1.20 s before contact** to **0.70 s after contact**.  
-  Overlapping windows merge into one; any non-overlap gap, however small, splits clips.
+* “Swing” = from **1.20 s before contact** to **0.70 s after contact**.
+  Only the highest-scoring peak is kept within any two-second window so all
+  swings have uniform length.
 
 ---
 
