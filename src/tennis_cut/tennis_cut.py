@@ -72,12 +72,23 @@ class PopDetector:
             preds, _ = self.learner.get_preds(dl=dl, reorder=False)
             probs = preds[:, 1]
 
-        peaks: List[float] = []
+        candidates: List[tuple[float, float]] = []
         for i, p in enumerate(probs):
-            if float(p) > 0.5:
+            score = float(p)
+            if score > 0.5:
                 center = i * self.stride_s + 0.125
-                peaks.append(float(center))
+                candidates.append((center, score))
 
+        # Non-max suppression: only keep the highest-scoring peak in any
+        # two-second window so that all swings have equal duration.
+        candidates.sort(key=lambda c: c[1], reverse=True)
+        kept: List[tuple[float, float]] = []
+        for t, s in candidates:
+            if all(abs(t - kt) >= 2.0 for kt, _ in kept):
+                kept.append((t, s))
+        kept.sort(key=lambda c: c[0])
+
+        peaks = [t for t, _ in kept]
         _LOG.info("Detected %d audio peaks", len(peaks))
         return peaks
 
@@ -161,19 +172,6 @@ def extract_audio(video: Path, wav_path: Path) -> None:
         stderr=subprocess.DEVNULL,
     )
 
-
-def merge_windows(windows: List[tuple[float, float]]) -> List[tuple[float, float]]:
-    if not windows:
-        return []
-    windows.sort(key=lambda w: w[0])
-    merged = [list(windows[0])]
-    for start, end in windows[1:]:
-        last = merged[-1]
-        if start <= last[1]:
-            last[1] = max(last[1], end)
-        else:
-            merged.append([start, end])
-    return [(s, e) for s, e in merged]
 
 
 def cut_swing(video: Path, start: float, end: float, out_path: Path) -> None:
@@ -267,9 +265,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         detector = PopDetector(Path(args.model))
         impact_times = detector.find_impacts(wav_path)
         candidate_windows = [(t - 1.20, t + 0.70) for t in impact_times]
-        merged = merge_windows(candidate_windows)
         swings: List[Swing] = []
-        for i, (start, end) in enumerate(merged):
+        for i, (start, end) in enumerate(candidate_windows):
             swings.append(Swing(index=i, start=start, end=end, contact=(start + 1.20)))
 
         if not swings:
