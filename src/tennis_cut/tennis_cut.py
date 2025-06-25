@@ -41,18 +41,14 @@ class PopDetector:
         self.stride_s = stride_s
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         learner = load_learner(model_path, cpu=self.device.type == "cpu")
-        self.model = learner.model.to(self.device)
-        self.model.eval()
+        learner.to(self.device)
+        learner.model.eval()
+        self.learner = learner
 
-    @staticmethod
-    def _preprocess(batch):
-        batch = batch - batch.mean(dim=1, keepdim=True)
-        batch[:, 1:] -= 0.97 * batch[:, :-1]
-        batch = batch / (batch.pow(2).mean(dim=1, keepdim=True).sqrt() + 1e-6)
-        return batch
 
     def find_impacts(self, wav_path: Path) -> List[float]:
         import torch
+        import pandas as pd
 
         waveform, sr = torchaudio.load(str(wav_path))
         if sr != 48_000:
@@ -64,12 +60,13 @@ class PopDetector:
         if waveform.shape[1] < window:
             return []
 
-        segments = waveform.unfold(1, window, stride).squeeze(0).transpose(0, 1)
-        segments = self._preprocess(segments)
+        starts = [i * stride / sr for i in range(0, waveform.shape[1] - window + 1, stride)]
+        df = pd.DataFrame({"wav_path": str(wav_path), "start": starts})
+        dl = self.learner.dls.test_dl(df, bs=128)
 
         with torch.no_grad():
-            logits = self.model(segments.unsqueeze(1).to(self.device))
-            probs = torch.softmax(logits, dim=1)[:, 1]
+            preds, _ = self.learner.get_preds(dl=dl, reorder=False)
+            probs = preds[:, 1]
 
         peaks: List[float] = []
         for i, p in enumerate(probs):
