@@ -103,13 +103,14 @@ class PopDetector:
         # two-second window so that all swings have equal duration.
         candidates.sort(key=lambda c: c[1], reverse=True)
         kept: List[tuple[float, float]] = []
-        for t, s in candidates:
-            if all(abs(t - kt) >= PEAK_MIN_SEPARATION for kt, _ in kept):
-                kept.append((t, s))
+        for timestamp, score in candidates:
+            if all(abs(timestamp - kept_timestamp) >= PEAK_MIN_SEPARATION for kept_timestamp, _ in kept):
+                kept.append((timestamp, score))
         kept.sort(key=lambda c: c[0])
 
-        peaks = [t for t, _ in kept]
+        peaks = [timestamp for timestamp, _ in kept]
         _LOG.info("Detected %d audio peaks", len(peaks))
+        _LOG.info("Detected peaks: " + ", ".join(f"{p:.3f}" for p in peaks))
         return peaks
 
 
