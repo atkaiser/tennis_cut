@@ -27,7 +27,6 @@ DEFAULT_STRIDE_S = 0.05
 SAMPLE_RATE = 48_000
 WINDOW_DURATION = 0.25
 PEAK_THRESHOLD = 0.5
-PEAK_OFFSET = 0.125
 PEAK_MIN_SEPARATION = 2.0
 BATCH_SIZE = 128
 SLOWMO_HALF = 0.5
@@ -111,7 +110,7 @@ class PopDetector:
         for i, p in enumerate(probs):
             score = float(p)
             if score > PEAK_THRESHOLD:
-                center = i * self.stride_s + PEAK_OFFSET
+                center = i * self.stride_s + (WINDOW_DURATION/2)
                 candidates.append((center, score))
 
         # Non-max suppression: only keep the highest-scoring peak in any
