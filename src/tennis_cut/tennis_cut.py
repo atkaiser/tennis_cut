@@ -11,6 +11,7 @@ import logging
 import shutil
 import sys
 import tempfile
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Sequence
@@ -40,7 +41,10 @@ class PopDetector:
 
         self.stride_s = stride_s
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-        learner = load_learner(model_path, cpu=self.device.type == "cpu")
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=UserWarning,
+                                    message="load_learner` uses Python's insecure pickle")
+            learner = load_learner(model_path, cpu=self.device.type == "cpu")
         learner.to(self.device)
         learner.model.eval()
         self.learner = learner
@@ -60,7 +64,7 @@ class PopDetector:
         if waveform.shape[1] < window:
             return []
 
-        starts = [i * stride / sr for i in range(0, waveform.shape[1] - window + 1, stride)]
+        starts = [sample_start / sr for sample_start in range(0, waveform.shape[1] - window + 1, stride)]
         df = pd.DataFrame({"wav_path": str(wav_path), "start": starts})
         dl = self.learner.dls.test_dl(df, bs=128)
 
