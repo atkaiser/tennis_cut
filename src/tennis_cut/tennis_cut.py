@@ -246,38 +246,38 @@ def cut_swing(video: Path, start: float, end: float, out_path: Path) -> None:
 
 
 def slowmo_video(src: Path, dst: Path, factor: float) -> None:
-    """Re-encode ``src`` at a lower frame rate and tempo."""
+    """
+    Re-encode *src* at 1/factor speed (factor ∈ (0, 1]).
+    factor = 0.5  →  half-speed
+    factor = 0.25 →  quarter-speed
+    """
+    ATEMPO_LIMIT = 0.5
 
-    meta = probe(src)
-    new_fps = meta["fps"] * factor
+    if not 0 < factor <= 1:
+        raise ValueError("factor must be in (0, 1]")
 
-    atempo_filters = []
+    # -------- audio tempo chain (0.5–2.0 per stage) ----------
     remaining = factor
-    while remaining < ATEMPO_HALF:
-        atempo_filters.append(f"atempo={ATEMPO_HALF}")
-        remaining /= ATEMPO_HALF
-    atempo_filters.append(f"atempo={remaining:.3f}")
-    a_filter = ",".join(atempo_filters)
+    a_filters = []
+    while remaining < ATEMPO_LIMIT:       # split into 0.5× pieces
+        a_filters.append("atempo=0.5")
+        remaining /= ATEMPO_LIMIT
+    a_filters.append(f"atempo={remaining:.3f}")
+    a_filter = ",".join(a_filters)
 
-    run_cmd(
-        [
-            "ffmpeg",
-            "-i",
-            str(src),
-            "-r",
-            f"{new_fps}",
-            "-af",
-            a_filter,
-            "-c:v",
-            "libx264",
-            "-crf",
-            "20",
-            "-c:a",
-            "aac",
-            str(dst),
-            "-y",
-        ]
-    )
+    # -------- video filter – stretch presentation timestamps ----
+    v_filter = f"setpts={1/factor:.6f}*PTS"   # e.g. factor 0.5 ⇒ 2.0*PTS
+
+    # -------- build the ffmpeg command -------------------------
+    run_cmd([
+        "ffmpeg", "-i", str(src),
+        "-vf", v_filter,            # slow the video
+        "-af", a_filter,            # slow the audio
+        "-c:v", "libx264", "-crf", "20",
+        "-c:a", "aac",
+        "-movflags", "+faststart",  # Puts metadata at the start of the video
+        str(dst), "-y",
+    ])
 
 
 def main(argv: Sequence[str] | None = None) -> int:
