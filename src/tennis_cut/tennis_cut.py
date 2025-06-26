@@ -216,7 +216,11 @@ def cut_swing(video: Path, start: float, end: float, out_path: Path) -> None:
             str(start),
             "-to",
             str(end),
-            "-c",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "20",
+            "-c:a",
             "copy",
             str(out_path),
             "-y",
@@ -305,6 +309,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         clip_paths: List[Path] = []
         for swing in swings:
+            _LOG.info(
+                "Extracting swing %d: %.2f - %.2f (contact %.2f)",
+                swing.index,
+                swing.start,
+                swing.end,
+                swing.contact,
+            )
             out_tmp = tmpdir_path / f"swing_{swing.index}.mp4"
             cut_swing(input_path, swing.start, swing.end, out_tmp)
             clip_paths.append(out_tmp)
