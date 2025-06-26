@@ -74,7 +74,14 @@ class PopDetector:
         from fastai.learner import load_learner
 
         self.stride_s = stride_s
-        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        if device is None:
+            if torch.backends.mps.is_available():
+                device = "mps"
+            elif torch.cuda.is_available():
+                device = "cuda"
+            else:
+                device = "cpu"
+        self.device = torch.device(device)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=UserWarning,
                                     message="load_learner` uses Python's insecure pickle")
@@ -138,6 +145,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument("--metadata", action="store_true", help="Write JSON manifest")
     p.add_argument("--no-stitch", action="store_true", help="Skip the merged video")
     p.add_argument("--tracker", action="store_true", help="Use SORT tracker (unused)")
+    p.add_argument(
+        "--device",
+        choices=["cpu", "cuda", "mps"],
+        default="mps",
+        help="PyTorch device to run the models on",
+    )
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     p.add_argument("-q", "--quiet", action="store_true", help="Errors only")
     return p.parse_args(argv)
@@ -292,7 +305,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         tmpdir_path = Path(tmpdir)
         wav_path = tmpdir_path / "audio.wav"
         extract_audio(input_path, wav_path)
-        detector = PopDetector(Path(args.model))
+        detector = PopDetector(Path(args.model), device=args.device)
         impact_times = detector.find_impacts(wav_path)
         candidate_windows = [
             (t - PRE_CONTACT_BUFFER, t + POST_CONTACT_BUFFER) for t in impact_times
