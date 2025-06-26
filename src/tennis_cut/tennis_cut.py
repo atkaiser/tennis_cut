@@ -162,7 +162,11 @@ def setup_logging(args: argparse.Namespace) -> None:
         level = logging.INFO
     if args.quiet:
         level = logging.ERROR
-    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 
 def check_ffmpeg() -> None:
