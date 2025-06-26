@@ -4,7 +4,7 @@
 * **Default:** one stitched MP4 containing *only* the player-of-interest’s swings, each clip cropped to the player and zoomed, in original frame-rate, aspect ratio preserved.
 * Optional flags:
   * Separate per-swing clips instead of a single file.
-  * 0.5× / 0.25× slow-motion versions.
+  * Optional slow‑motion versions at user-specified factors (e.g. 0.5×).
   * JSON metadata file describing each swing.
 * “Swing” = from **1.20 s before contact** to **0.70 s after contact**.
   Only the highest-scoring peak is kept within any two-second window so all
@@ -61,7 +61,7 @@
 | Crop box | Union of all accepted boxes in the swing window, padded **10 %** each side, then expanded to match source aspect ratio. |
 | Clip merge | Windows that overlap **any amount** are merged. |
 | Cutting & stitching | `ffmpeg` concat demuxer. All video is copy-stream-copied; audio kept unchanged. |
-| Slow-mo | `ffmpeg -filter:v "setpts=2.0*PTS" -filter:a "atempo=0.5"` (two passes for 0.25×) – audio pitch-shift remains (simplest). |
+| Slow-mo | `ffmpeg` re-encode with reduced frame rate and repeated `atempo=0.5` filters to approximate the factor. |
 | Metadata file | `<input>_swings.json`, schema:  ```{ "video": "<file>", "sample_rate": 48000, "swings":[ { "index":0,"start":12.417,"end":14.317,"contact":13.617,"crop":[x,y,w,h] }, … ] }``` |
 | CLI framework | `argparse` |
 
@@ -75,7 +75,7 @@ python tennis_cut.py <input.mp4> [options]
 Options
   -o, --output-dir DIR      Directory for all outputs (default: ./out/)
   --clips                   Produce individual swing_<N>.mp4 files as well
-  --slowmo {0.5,0.25}       Also generate slow-motion version(s)
+  --slowmo FACTOR [FACTOR ...]  Also generate slow-motion version(s)
   --metadata                Emit JSON metadata file
   --no-stitch               Skip the stitched video
   --tracker                 Use SORT tracking instead of “largest box”
@@ -87,7 +87,7 @@ Options
 
 * Stitched: `<basename>_swings.mp4`
 * Per-swing: `<basename>_swing<N>.mp4`
-* Slow-mo: suffix `_slow0.5x.mp4` / `_slow0.25x.mp4`
+* Slow-mo: suffix `_slow<F>x.mp4` where `<F>` is the factor (e.g. `_slow0.5x.mp4`)
 * Metadata: `<basename>_swings.json`
 
 **Collision rule:** if any of those filenames already exist in `--output-dir`, abort with an error code ≈ 2.
