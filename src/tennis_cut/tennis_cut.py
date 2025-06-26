@@ -29,12 +29,7 @@ WINDOW_DURATION = 0.25
 PEAK_THRESHOLD = 0.5
 PEAK_MIN_SEPARATION = 2.0
 BATCH_SIZE = 128
-SLOWMO_HALF = 0.5
-SLOWMO_QUARTER = 0.25
-SETPTS_HALF = 2.0
-SETPTS_QUARTER = 4.0
 ATEMPO_HALF = 0.5
-SLOWMO_FPS = 30
 PRE_CONTACT_BUFFER = 1.20
 POST_CONTACT_BUFFER = 0.70
 
@@ -141,7 +136,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument("-o", "--output-dir", default="./out/", help="Output directory")
     p.add_argument("--model", required=True, help="Path to trained audio model")
     p.add_argument("--clips", action="store_true", help="Export each swing separately")
-    p.add_argument("--slowmo", choices=[str(SLOWMO_HALF), str(SLOWMO_QUARTER)], nargs="*", help="Generate slow-motion version(s)")
+    p.add_argument(
+        "--slowmo",
+        type=float,
+        nargs="*",
+        help="Generate slow-motion version(s); e.g. 0.5 for half speed",
+    )
     p.add_argument("--metadata", action="store_true", help="Write JSON manifest")
     p.add_argument("--no-stitch", action="store_true", help="Skip the merged video")
     p.add_argument("--tracker", action="store_true", help="Use SORT tracker (unused)")
@@ -242,22 +242,34 @@ def cut_swing(video: Path, start: float, end: float, out_path: Path) -> None:
 
 
 def slowmo_video(src: Path, dst: Path, factor: float) -> None:
-    if factor == SLOWMO_HALF:
-        v_filter = f"setpts={SETPTS_HALF}*PTS"
-        a_filter = f"atempo={ATEMPO_HALF}"
-    else:  # SLOWMO_QUARTER
-        v_filter = f"setpts={SETPTS_QUARTER}*PTS"
-        a_filter = f"atempo={ATEMPO_HALF},atempo={ATEMPO_HALF}"
-    vf = f"fps={SLOWMO_FPS},{v_filter}"
+    """Re-encode ``src`` at a lower frame rate and tempo."""
+
+    meta = probe(src)
+    new_fps = meta["fps"] * factor
+
+    atempo_filters = []
+    remaining = factor
+    while remaining < ATEMPO_HALF:
+        atempo_filters.append(f"atempo={ATEMPO_HALF}")
+        remaining /= ATEMPO_HALF
+    atempo_filters.append(f"atempo={remaining:.3f}")
+    a_filter = ",".join(atempo_filters)
+
     run_cmd(
         [
             "ffmpeg",
             "-i",
             str(src),
-            "-vf",
-            vf,
+            "-r",
+            f"{new_fps}",
             "-af",
             a_filter,
+            "-c:v",
+            "libx264",
+            "-crf",
+            "20",
+            "-c:a",
+            "aac",
             str(dst),
             "-y",
         ]
