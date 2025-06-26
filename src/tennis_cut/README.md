@@ -10,4 +10,6 @@ Run:
 python tennis_cut.py <input.mp4> --model path/to/audio_pop.pth [options]
 ```
 
+Use `--device` to control the PyTorch device (default: `mps`).
+
 The available options match those described in `spec.md` under the *Command-line Interface* section.
