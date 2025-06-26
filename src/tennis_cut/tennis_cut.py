@@ -359,6 +359,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 clip_paths[i] = dest
 
         if not args.no_stitch:
+            _LOG.info("Stitching swings")
             concat_file = tmpdir_path / "concat.txt"
             with open(concat_file, "w") as fh:
                 for p in clip_paths:
