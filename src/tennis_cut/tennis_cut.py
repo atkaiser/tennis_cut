@@ -383,6 +383,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.slowmo:
             base_input = stitched_path if not args.no_stitch else clip_paths[0]
             for factor_str in args.slowmo:
+                _LOG.info("Generating slowmo %s", factor_str)
                 factor = float(factor_str)
                 dst = slow_paths[factor]
                 slowmo_video(base_input, dst, factor)
