@@ -224,6 +224,7 @@ def extract_audio(video: Path, wav_path: Path) -> None:
 
 
 def cut_swing(video: Path, start: float, end: float, out_path: Path) -> None:
+    # Take into account cropping the videos
     run_cmd(
         [
             "ffmpeg",
@@ -323,12 +324,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         extract_audio(input_path, wav_path)
         detector = PopDetector(Path(args.model), device=args.device)
         impact_times = detector.find_impacts(wav_path)
+        # Detect if a person is in the frame, and if so, accept the window
+        # Additionally return the dimensions of the person box
         candidate_windows = [
             (t - PRE_CONTACT_BUFFER, t + POST_CONTACT_BUFFER) for t in impact_times
         ]
         swings: List[Swing] = []
         for i, (start, end) in enumerate(candidate_windows):
             swings.append(
+                # Add the crop to the swing here, it should be 10% bigger than the person box
+                # and keep the same aspect ratio as the original video
                 Swing(index=i, start=start, end=end, contact=(start + PRE_CONTACT_BUFFER))
             )
 
@@ -346,6 +351,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 swing.contact,
             )
             out_tmp = tmpdir_path / f"swing_{swing.index}.mp4"
+            # The crop should be passed in as well
             cut_swing(input_path, swing.start, swing.end, out_tmp)
             clip_paths.append(out_tmp)
 
@@ -360,6 +366,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if not args.no_stitch:
             _LOG.info("Stitching swings")
+            # Possibly might need to take into account the videos might
+            # be different dimensions
             concat_file = tmpdir_path / "concat.txt"
             with open(concat_file, "w") as fh:
                 for p in clip_paths:
