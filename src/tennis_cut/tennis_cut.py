@@ -160,6 +160,8 @@ def extract_frame(video: Path, time: float, out_path: Path) -> None:
 
     run_cmd([
         "ffmpeg",
+        "-hwaccel",
+        "videotoolbox",
         "-ss",
         str(time),
         "-i",
@@ -282,6 +284,8 @@ def extract_audio(video: Path, wav_path: Path) -> None:
     run_cmd(
         [
             "ffmpeg",
+            "-hwaccel",
+            "videotoolbox",
             "-i",
             str(video),
             "-ac",
@@ -302,6 +306,8 @@ def cut_swing(
 
     cmd = [
         "ffmpeg",
+        "-hwaccel",
+        "videotoolbox",
         "-i",
         str(video),
         "-ss",
@@ -314,7 +320,7 @@ def cut_swing(
         cmd += ["-filter:v", f"crop={w}:{h}:{x}:{y}"]
     cmd += [
         "-c:v",
-        "libx264",
+        "h264_videotoolbox",
         "-crf",
         "20",
         "-c:a",
@@ -350,10 +356,14 @@ def slowmo_video(src: Path, dst: Path, factor: float) -> None:
 
     # -------- build the ffmpeg command -------------------------
     run_cmd([
-        "ffmpeg", "-i", str(src),
+        "ffmpeg",
+        "-hwaccel",
+        "videotoolbox",
+        "-i",
+        str(src),
         "-vf", v_filter,            # slow the video
         "-af", a_filter,            # slow the audio
-        "-c:v", "libx264", "-crf", "20",
+        "-c:v", "h264_videotoolbox", "-crf", "20",
         "-c:a", "aac",
         "-movflags", "+faststart",  # Puts metadata at the start of the video
         str(dst), "-y",
