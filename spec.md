@@ -4,7 +4,7 @@
 * **Default:** one stitched MP4 containing *only* the player-of-interest’s swings, each clip cropped to the player and zoomed, in original frame-rate, aspect ratio preserved.
 * Optional flags:
   * Separate per-swing clips instead of a single file.
-  * Optional slow‑motion versions at user-specified factors (e.g. 0.5×).
+  * Optional slow‑motion version at a user-specified factor (e.g. 0.5×).
   * JSON metadata file describing each swing.
 * “Swing” = from **1.20 s before contact** to **0.70 s after contact**.
   Only the highest-scoring peak is kept within any two-second window so all
@@ -75,7 +75,7 @@ python tennis_cut.py <input.mp4> [options]
 Options
   -o, --output-dir DIR      Directory for all outputs (default: ./out/)
   --clips                   Produce individual swing_<N>.mp4 files as well
-  --slowmo FACTOR [FACTOR ...]  Also generate slow-motion version(s)
+  --slowmo FACTOR           Generate a slow-motion version
   --metadata                Emit JSON metadata file
   --no-stitch               Skip the stitched video
   --tracker                 Use SORT tracking instead of “largest box”
