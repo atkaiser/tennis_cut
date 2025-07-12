@@ -211,8 +211,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument(
         "--slowmo",
         type=float,
-        nargs="*",
-        help="Generate slow-motion version(s); e.g. 0.5 for half speed",
+        help="Generate a slow-motion version; e.g. 0.5 for half speed",
     )
     p.add_argument("--metadata", action="store_true", help="Write JSON manifest")
     p.add_argument("--no-stitch", action="store_true", help="Skip the merged video")
@@ -375,17 +374,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     base = input_path.stem
     stitched_path = output_dir / f"{base}_swings.mp4"
     meta_path = output_dir / f"{base}_swings.json"
-    slow_paths = {
-        float(f): output_dir / f"{base}_swings_slow{f}x.mp4" for f in (args.slowmo or [])
-    }
+    slow_path = (
+        output_dir / f"{base}_swings_slow{args.slowmo}x.mp4" if args.slowmo is not None else None
+    )
 
     candidates = []
     if not args.no_stitch:
         candidates.append(stitched_path)
     if args.metadata:
         candidates.append(meta_path)
-    for f in slow_paths.values():
-        candidates.append(f)
+    if slow_path is not None:
+        candidates.append(slow_path)
     if args.clips:
         # Only check enough swing filenames lazily after we know swing count
         pass
@@ -476,13 +475,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ]
             )
 
-        if args.slowmo:
+        if args.slowmo is not None:
             base_input = stitched_path if not args.no_stitch else clip_paths[0]
-            for factor_str in args.slowmo:
-                _LOG.info("Generating slowmo %s", factor_str)
-                factor = float(factor_str)
-                dst = slow_paths[factor]
-                slowmo_video(base_input, dst, factor)
+            _LOG.info("Generating slowmo %.3f", args.slowmo)
+            slowmo_video(base_input, slow_path, args.slowmo)
 
         if args.metadata:
             records = [
