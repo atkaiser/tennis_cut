@@ -172,15 +172,15 @@ def extract_frame(video: Path, time: float, out_path: Path) -> None:
 
 
 def expand_box(box: Tuple[int, int, int, int], res: Tuple[int, int]) -> Tuple[int, int, int, int]:
-    """Pad box by 10% and fit to the video aspect ratio."""
+    """Pad box by 20% and fit to the video aspect ratio."""
 
     x1, y1, x2, y2 = box
     w = x2 - x1
     h = y2 - y1
     cx = x1 + w / 2
     cy = y1 + h / 2
-    w *= 1.1
-    h *= 1.1
+    w *= 1.2
+    h *= 1.2
     frame_w, frame_h = res
     aspect = frame_w / frame_h
     if w / h > aspect:
@@ -215,7 +215,6 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     p.add_argument("--metadata", action="store_true", help="Write JSON manifest")
     p.add_argument("--no-stitch", action="store_true", help="Skip the merged video")
-    p.add_argument("--tracker", action="store_true", help="Use SORT tracker (unused)")
     p.add_argument(
         "--device",
         choices=["cpu", "cuda", "mps"],
@@ -378,21 +377,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_dir / f"{base}_swings_slow{args.slowmo}x.mp4" if args.slowmo is not None else None
     )
 
-    candidates = []
-    if not args.no_stitch:
-        candidates.append(stitched_path)
-    if args.metadata:
-        candidates.append(meta_path)
-    if slow_path is not None:
-        candidates.append(slow_path)
-    if args.clips:
-        # Only check enough swing filenames lazily after we know swing count
-        pass
-    for path in candidates:
-        if path.exists():
-            _LOG.error("Output file %s already exists", path)
-            return 2
-
     meta = probe(input_path)
     _LOG.info("Video fps=%.2f res=%s audio=%s", meta["fps"], meta["resolution"], meta["audio_codec"])
 
@@ -445,9 +429,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.clips:
             for i, src_path in enumerate(clip_paths):
                 dest = output_dir / f"{base}_swing{i}.mp4"
-                if dest.exists():
-                    _LOG.error("Output file %s already exists", dest)
-                    return 2
                 shutil.move(src_path, dest)
                 clip_paths[i] = dest
 
