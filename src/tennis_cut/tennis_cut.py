@@ -301,12 +301,12 @@ def cut_swing(
 
     cmd = [
         "ffmpeg",
-        "-i",
-        str(video),
         "-ss",
         str(start),
-        "-to",
-        str(end),
+        "-t",
+        str(end - start),
+        "-i",
+        str(video),
     ]
     if crop is not None:
         x, y, w, h = crop
