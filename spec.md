@@ -87,7 +87,9 @@ Options
 
 * Stitched: `<basename>_swings.mp4`
 * Per-swing: `<basename>_swing<N>.mp4`
-* Slow-mo: suffix `_slow<F>x.mp4` where `<F>` is the factor (e.g. `_slow0.5x.mp4`)
+* Slow-mo: when `--slowmo` is given, all output videos are slowed by the
+  specified factor. File names remain the same as normal-speed outputs and no
+  normal-speed clips are kept.
 * Metadata: `<basename>_swings.json`
 
 **Collision rule:** if any of those filenames already exist in `--output-dir`, abort with an error code ≈ 2.
