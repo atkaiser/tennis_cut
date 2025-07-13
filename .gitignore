@@ -1,6 +1,7 @@
 .aider*
 
 .DS_Store
+yolov8n.pt
 
 # Ignore data directories
 /meta/
