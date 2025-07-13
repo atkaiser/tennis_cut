@@ -294,9 +294,14 @@ def extract_audio(video: Path, wav_path: Path) -> None:
 
 
 def cut_swing(
-    video: Path, start: float, end: float, out_path: Path, crop: Sequence[int] | None
+    video: Path,
+    start: float,
+    end: float,
+    out_path: Path,
+    crop: Sequence[int] | None,
+    slowmo: float | None = None,
 ) -> None:
-    """Extract *video* segment and optionally crop to ``crop``."""
+    """Extract *video* segment and optionally crop and slow down."""
 
     cmd = [
         "ffmpeg",
@@ -307,55 +312,43 @@ def cut_swing(
         "-i",
         str(video),
     ]
+
+    v_filters = []
     if crop is not None:
         x, y, w, h = crop
-        cmd += ["-filter:v", f"crop={w}:{h}:{x}:{y}"]
+        v_filters.append(f"crop={w}:{h}:{x}:{y}")
+    if slowmo is not None:
+        if not 0 < slowmo <= 1:
+            raise ValueError("slowmo must be in (0, 1]")
+        v_filters.append(f"setpts={1/slowmo:.6f}*PTS")
+
+    if v_filters:
+        cmd += ["-filter:v", ",".join(v_filters)]
+
+    if slowmo is not None:
+        ATEMPO_LIMIT = 0.5
+        remaining = slowmo
+        a_filters = []
+        while remaining < ATEMPO_LIMIT:
+            a_filters.append("atempo=0.5")
+            remaining /= ATEMPO_LIMIT
+        a_filters.append(f"atempo={remaining:.3f}")
+        a_filter = ",".join(a_filters)
+        cmd += ["-filter:a", a_filter, "-c:a", "aac"]
+    else:
+        cmd += ["-c:a", "copy"]
+
     cmd += [
         "-c:v",
         "libx264",
         "-crf",
         "20",
-        "-c:a",
-        "copy",
         str(out_path),
         "-y",
     ]
     run_cmd(cmd)
 
 
-def slowmo_video(src: Path, dst: Path, factor: float) -> None:
-    """
-    Re-encode *src* at 1/factor speed (factor ∈ (0, 1]).
-    factor = 0.5  →  half-speed
-    factor = 0.25 →  quarter-speed
-    """
-    ATEMPO_LIMIT = 0.5
-
-    if not 0 < factor <= 1:
-        raise ValueError("factor must be in (0, 1]")
-
-    # -------- audio tempo chain (0.5–2.0 per stage) ----------
-    remaining = factor
-    a_filters = []
-    while remaining < ATEMPO_LIMIT:       # split into 0.5× pieces
-        a_filters.append("atempo=0.5")
-        remaining /= ATEMPO_LIMIT
-    a_filters.append(f"atempo={remaining:.3f}")
-    a_filter = ",".join(a_filters)
-
-    # -------- video filter – stretch presentation timestamps ----
-    v_filter = f"setpts={1/factor:.6f}*PTS"   # e.g. factor 0.5 ⇒ 2.0*PTS
-
-    # -------- build the ffmpeg command -------------------------
-    run_cmd([
-        "ffmpeg", "-i", str(src),
-        "-vf", v_filter,            # slow the video
-        "-af", a_filter,            # slow the audio
-        "-c:v", "libx264", "-crf", "20",
-        "-c:a", "aac",
-        "-movflags", "+faststart",  # Puts metadata at the start of the video
-        str(dst), "-y",
-    ])
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -373,9 +366,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     base = input_path.stem
     stitched_path = output_dir / f"{base}_swings.mp4"
     meta_path = output_dir / f"{base}_swings.json"
-    slow_path = (
-        output_dir / f"{base}_swings_slow{args.slowmo}x.mp4" if args.slowmo is not None else None
-    )
 
     meta = probe(input_path)
     _LOG.info("Video fps=%.2f res=%s audio=%s", meta["fps"], meta["resolution"], meta["audio_codec"])
@@ -423,7 +413,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 swing.contact,
             )
             out_tmp = tmpdir_path / f"swing_{swing.index}.mp4"
-            cut_swing(input_path, swing.start, swing.end, out_tmp, swing.crop)
+            cut_swing(
+                input_path,
+                swing.start,
+                swing.end,
+                out_tmp,
+                swing.crop,
+                slowmo=args.slowmo,
+            )
             clip_paths.append(out_tmp)
 
         if args.clips:
@@ -456,10 +453,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ]
             )
 
-        if args.slowmo is not None:
-            base_input = stitched_path if not args.no_stitch else clip_paths[0]
-            _LOG.info("Generating slowmo %.3f", args.slowmo)
-            slowmo_video(base_input, slow_path, args.slowmo)
+        # Clips were already generated in slow motion if requested
 
         if args.metadata:
             records = [
