@@ -342,7 +342,7 @@ def cut_swing(
         "-c:v",
         "libx264",
         "-crf",
-        "20",
+        "18",
         str(out_path),
         "-y",
     ]
@@ -452,8 +452,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "-y",
                 ]
             )
-
-        # Clips were already generated in slow motion if requested
 
         if args.metadata:
             records = [
