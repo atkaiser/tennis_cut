@@ -7,5 +7,12 @@
     15.087,
     18.463
   ],
+  "shots": [
+    {"time": 4.354, "type": "forehand"},
+    {"time": 8.224, "type": "backhand"},
+    {"time": 11.541, "type": "volley"},
+    {"time": 15.087, "type": "forehand"},
+    {"time": 18.463, "type": "serve"}
+  ],
   "done": true
 }

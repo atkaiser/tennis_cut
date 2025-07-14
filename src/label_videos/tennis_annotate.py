@@ -15,11 +15,14 @@ Key bindings
     h  : forward 500 ms
     b  : forward 1 second
 
-    d  : mark the *current* frame time as an impact
+    d  : mark forehand
+    w  : mark backhand
+    e  : mark volley
+    r  : mark serve
 
-There is **no candidate/skip logic**. You scrub through the clip and press
-**d** whenever the ball makes contact. Impacts are written to
-`<video>.json` beside the source file.
+There is **no candidate/skip logic**. Scrub through the clip and press the
+appropriate key whenever the ball makes contact. Impacts are written to
+`<video>.json` beside the source file with the selected shot type.
 """
 from __future__ import annotations
 
@@ -64,10 +67,17 @@ def probe_fps(video_path: pathlib.Path) -> float:
 # Data model
 ###############################################################################
 @dataclass
+class Shot:
+    time: float
+    type: str
+
+
+@dataclass
 class AnnotationState:
     video: pathlib.Path
     fps: float
     impacts: List[float] = field(default_factory=list)
+    shots: List[Shot] = field(default_factory=list)
     done: bool = False
 
     # Calculate time step in milliseconds for a given number of frames based on the video's fps.
@@ -124,7 +134,13 @@ class Annotator(QWidget):
         elif k == Qt.Key_B:
             self._seek_rel(1000)
         elif k == Qt.Key_D:
-            self._mark_impact()
+            self._mark_impact("forehand")
+        elif k == Qt.Key_W:
+            self._mark_impact("backhand")
+        elif k == Qt.Key_E:
+            self._mark_impact("volley")
+        elif k == Qt.Key_R:
+            self._mark_impact("serve")
         elif k == Qt.Key_Z:
             self._mark_done()
         elif k == Qt.Key_V:
@@ -140,11 +156,13 @@ class Annotator(QWidget):
         self.player.setPosition(max(0, self.player.position() + delta_ms))
         self._update_label()
 
-    # Record the current video position as an impact, then save annotations and update the label.
-    def _mark_impact(self):
+    # Record the current video position as an impact with the given shot type,
+    # then save annotations and update the label.
+    def _mark_impact(self, shot_type: str):
         t = round(self.player.position() / 1000.0, 3)
         self.st.impacts.append(t)
-        print(f"[impact] {t:.3f}s  (total={len(self.st.impacts)})")
+        self.st.shots.append(Shot(time=t, type=shot_type))
+        print(f"[{shot_type}] {t:.3f}s  (total={len(self.st.impacts)})")
         self._save_json()
         self._update_label()
 
@@ -170,7 +188,10 @@ class Annotator(QWidget):
             "g: forward 250 ms\n" \
             "h: forward 500 ms\n" \
             "b: forward 1 sec\n" \
-            "d: mark impact\n" \
+            "d: mark forehand\n" \
+            "w: mark backhand\n" \
+            "e: mark volley\n" \
+            "r: mark serve\n" \
             "z: mark done\n" \
             "q: quit"
         )
@@ -178,7 +199,12 @@ class Annotator(QWidget):
     # Save the list of impact annotations to a JSON file located next to the video file.
     def _save_json(self):
         out = self.st.video.with_suffix(".json")
-        json.dump({"video": self.st.video.name, "impacts": self.st.impacts, "done": self.st.done}, open(out, "w"), indent=2)
+        json.dump({
+            "video": self.st.video.name,
+            "impacts": self.st.impacts,
+            "shots": [shot.__dict__ for shot in self.st.shots],
+            "done": self.st.done,
+        }, open(out, "w"), indent=2)
 
 ###############################################################################
 # Main
@@ -194,6 +220,11 @@ def annotate_video(path: pathlib.Path):
             impacts = data.get("impacts", [])
             if impacts:
                 state.impacts = impacts
+            for shot in data.get("shots", []):
+                t = shot.get("time")
+                typ = shot.get("type")
+                if isinstance(t, (int, float)) and isinstance(typ, str):
+                    state.shots.append(Shot(time=float(t), type=typ))
         except Exception:
             pass
 
