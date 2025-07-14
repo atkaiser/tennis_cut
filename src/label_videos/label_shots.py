@@ -75,11 +75,20 @@ class ShotLabeler(QWidget):
         if self.current_video != it.video:
             self.current_video = it.video
             self.player.setSource(QUrl.fromLocalFile(str(it.video)))
+
+            def seek_and_pause() -> None:
+                self.player.pause()
+                self.player.setPosition(int(it.time * 1000))
+                self._update_label()
+
+            # Start playback briefly so the first frame renders, then seek to
+            # the impact time once the metadata has loaded.
             self.player.play()
-            QTimer.singleShot(100, self.player.pause)
-        self.player.setPosition(int(it.time * 1000))
-        self.player.pause()
-        self._update_label()
+            QTimer.singleShot(100, seek_and_pause)
+        else:
+            self.player.setPosition(int(it.time * 1000))
+            self.player.pause()
+            self._update_label()
 
     def _update_label(self) -> None:
         item = self.items[self.idx]
