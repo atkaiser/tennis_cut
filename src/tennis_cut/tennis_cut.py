@@ -189,10 +189,18 @@ def expand_box(box: Tuple[int, int, int, int], res: Tuple[int, int]) -> Tuple[in
         h = w / aspect
     else:
         w = h * aspect
+
+    # Ensure the crop doesn't exceed the frame size
+    if w > frame_w:
+        w = frame_w
+    if h > frame_h:
+        h = frame_h
+
     x1 = int(round(cx - w / 2))
     y1 = int(round(cy - h / 2))
     w = int(round(w))
     h = int(round(h))
+
     if x1 < 0:
         x1 = 0
     if y1 < 0:
