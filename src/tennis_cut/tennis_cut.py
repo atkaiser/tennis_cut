@@ -33,6 +33,8 @@ ATEMPO_HALF = 0.5
 PRE_CONTACT_BUFFER = 1.20
 POST_CONTACT_BUFFER = 0.70
 
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv"}
+
 
 _LOG = logging.getLogger(__name__)
 
@@ -352,6 +354,10 @@ def cut_swing(
 def process_video(input_path: Path, args: argparse.Namespace) -> int:
     """Process a single video according to *args*."""
 
+    if input_path.suffix.lower() not in VIDEO_EXTS:
+        _LOG.info("Skipping %s (not a video file)", input_path.name)
+        return 0
+
     if not input_path.exists():
         _LOG.error("Input file not found: %s", input_path)
         return 1
@@ -491,7 +497,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if input_path.is_dir():
         rc = 0
         for path in sorted(input_path.iterdir()):
-            if path.is_file():
+            if path.is_file() and path.suffix.lower() in VIDEO_EXTS:
                 result = process_video(path, args)
                 rc = rc or result
         return rc
