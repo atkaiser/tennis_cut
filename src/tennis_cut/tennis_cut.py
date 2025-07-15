@@ -349,17 +349,13 @@ def cut_swing(
     run_cmd(cmd)
 
 
+def process_video(input_path: Path, args: argparse.Namespace) -> int:
+    """Process a single video according to *args*."""
 
-
-def main(argv: Sequence[str] | None = None) -> int:
-    args = parse_args(argv or sys.argv[1:])
-    setup_logging(args)
-    check_ffmpeg()
-
-    input_path = Path(args.input)
     if not input_path.exists():
         _LOG.error("Input file not found: %s", input_path)
         return 1
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -367,8 +363,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     stitched_path = output_dir / f"{base}_swings.mp4"
     meta_path = output_dir / f"{base}_swings.json"
 
+    if stitched_path.exists() or meta_path.exists():
+        _LOG.info("Skipping %s (already processed)", input_path.name)
+        return 0
+
     meta = probe(input_path)
-    _LOG.info("Video fps=%.2f res=%s audio=%s", meta["fps"], meta["resolution"], meta["audio_codec"])
+    _LOG.info(
+        "Video fps=%.2f res=%s audio=%s",
+        meta["fps"],
+        meta["resolution"],
+        meta["audio_codec"],
+    )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
@@ -431,8 +436,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if not args.no_stitch:
             _LOG.info("Stitching swings")
-            # Possibly might need to take into account the videos might
-            # be different dimensions
             concat_file = tmpdir_path / "concat.txt"
             with open(concat_file, "w") as fh:
                 for p in clip_paths:
@@ -465,9 +468,35 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for sw in swings
             ]
             with open(meta_path, "w") as fh:
-                json.dump({"video": str(input_path.name), "sample_rate": SAMPLE_RATE, "swings": records}, fh, indent=2)
+                json.dump(
+                    {
+                        "video": str(input_path.name),
+                        "sample_rate": SAMPLE_RATE,
+                        "swings": records,
+                    },
+                    fh,
+                    indent=2,
+                )
 
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv or sys.argv[1:])
+    setup_logging(args)
+    check_ffmpeg()
+
+    input_path = Path(args.input)
+
+    if input_path.is_dir():
+        rc = 0
+        for path in sorted(input_path.iterdir()):
+            if path.is_file():
+                result = process_video(path, args)
+                rc = rc or result
+        return rc
+
+    return process_video(input_path, args)
 
 
 if __name__ == "__main__":
