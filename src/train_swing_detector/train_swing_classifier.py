@@ -24,9 +24,9 @@ from fastai.vision.all import (
     vision_learner,
     resnet18,
     accuracy,
-    F1Score,
-    ClassificationInterpretation,
 )
+from fastai.metrics import F1Score
+from fastai.vision.all import ClassificationInterpretation
 
 
 # ----------------------------------------------------------------------
@@ -44,7 +44,7 @@ def main(data_dir: str, epochs: int, bs: int, lr: float | None,
         valid_pct=0.2,
         seed=42,
         item_tfms=Resize(224),
-        batch_tfms=aug_transforms(),
+        batch_tfms=aug_transforms(max_warp=0),
         bs=bs,
         device=device,
     )
@@ -53,7 +53,7 @@ def main(data_dir: str, epochs: int, bs: int, lr: float | None,
     learn = vision_learner(
         dls,
         arch_func,
-        metrics=[accuracy, F1Score()],
+        metrics=[accuracy, F1Score(average='macro')],
     )
 
     if lr is None:
