@@ -22,6 +22,8 @@ import pathlib
 import random
 import subprocess
 import sys
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+from utilities import probe_duration
 from typing import List, Tuple
 
 # -----------------------  constants / defaults  -----------------------
@@ -46,17 +48,6 @@ def extract_wav(mp4_path: pathlib.Path, wav_path: pathlib.Path) -> None:
         str(wav_path),
     ]
     subprocess.run(cmd, check=True)
-
-def probe_duration(path: pathlib.Path) -> float:
-    """Return media duration in seconds using ffprobe."""
-    cmd = [
-        "ffprobe", "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        str(path),
-    ]
-    out = subprocess.check_output(cmd).decode().strip()
-    return float(out)
 
 def sample_near_neg(t: float) -> float:
     """Return a timestamp slightly before or after ``t`` for a near negative."""
