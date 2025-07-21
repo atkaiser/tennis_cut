@@ -65,6 +65,7 @@ class Swing:
     end: float
     contact: float
     crop: Sequence[int] | None = None
+    label: str | None = None
 
 
 class PopDetector:
@@ -162,9 +163,12 @@ class SwingDetector:
         learner.model.eval()
         self.learner = learner
 
-    def is_swing(self, img) -> bool:
+    def predict_label(self, img) -> str:
         pred, _, _ = self.learner.predict(img)
-        return str(pred) != "no_shot"
+        return str(pred)
+
+    def is_swing(self, img) -> bool:
+        return self.predict_label(img) != "no_shot"
 
 
 def extract_frame(video: Path, time: float, out_path: Path) -> None:
@@ -383,10 +387,12 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
                 _LOG.info("No person found for impact %d", i)
                 continue
             crop = expand_box(box, meta["resolution"])
+            label = None
             if swing_detector is not None:
                 with Image.open(frame_path) as img:
                     cropped = img.crop((crop[0], crop[1], crop[0] + crop[2], crop[1] + crop[3]))
-                    if not swing_detector.is_swing(cropped):
+                    label = swing_detector.predict_label(cropped)
+                    if label == "no_shot":
                         _LOG.info("Impact %d not a swing", i)
                         continue
             swings.append(
@@ -396,6 +402,7 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
                     end=end,
                     contact=t,
                     crop=crop,
+                    label=label,
                 )
             )
 
@@ -429,27 +436,56 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
                 shutil.move(src_path, dest)
                 clip_paths[i] = dest
 
+        label_groups: dict[str, List[Path]] = {}
+        for swing, path in zip(swings, clip_paths):
+            key = swing.label or "swing"
+            label_groups.setdefault(key, []).append(path)
+
         if not args.no_stitch:
-            _LOG.info("Stitching swings")
-            concat_file = tmpdir_path / "concat.txt"
-            with open(concat_file, "w") as fh:
-                for p in clip_paths:
-                    fh.write(f"file '{p.resolve()}'\n")
-            run_cmd(
-                [
-                    "ffmpeg",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    str(concat_file),
-                    "-c",
-                    "copy",
-                    str(stitched_path),
-                    "-y",
-                ]
-            )
+            if args.swing_model and args.slowmo:
+                for label, paths in label_groups.items():
+                    _LOG.info("Stitching %s swings", label)
+                    concat_file = tmpdir_path / f"concat_{label}.txt"
+                    with open(concat_file, "w") as fh:
+                        for p in paths:
+                            fh.write(f"file '{p.resolve()}'\n")
+                    out_file = output_dir / f"{base}_{label}_slow{args.slowmo}x.mp4"
+                    run_cmd(
+                        [
+                            "ffmpeg",
+                            "-f",
+                            "concat",
+                            "-safe",
+                            "0",
+                            "-i",
+                            str(concat_file),
+                            "-c",
+                            "copy",
+                            str(out_file),
+                            "-y",
+                        ]
+                    )
+            else:
+                _LOG.info("Stitching swings")
+                concat_file = tmpdir_path / "concat.txt"
+                with open(concat_file, "w") as fh:
+                    for p in clip_paths:
+                        fh.write(f"file '{p.resolve()}'\n")
+                run_cmd(
+                    [
+                        "ffmpeg",
+                        "-f",
+                        "concat",
+                        "-safe",
+                        "0",
+                        "-i",
+                        str(concat_file),
+                        "-c",
+                        "copy",
+                        str(stitched_path),
+                        "-y",
+                    ]
+                )
 
         if args.metadata:
             records = [
@@ -459,6 +495,7 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
                     "end": sw.end,
                     "contact": sw.contact,
                     "crop": sw.crop,
+                    "label": sw.label,
                 }
                 for sw in swings
             ]
