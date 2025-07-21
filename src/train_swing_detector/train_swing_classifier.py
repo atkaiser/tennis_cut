@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
+import torch
+from fastai.torch_core import defaults
 from fastai.vision.all import (
     ImageDataLoaders,
     Resize,
@@ -34,6 +36,8 @@ from fastai.vision.all import ClassificationInterpretation
 def main(data_dir: str, epochs: int, bs: int, lr: float | None,
          out_dir: str, device: str, arch: str) -> None:
     """Train the swing classifier on ``data_dir``."""
+
+    defaults.device = torch.device(device)
 
     data_path = Path(data_dir)
     out_path = Path(out_dir)
@@ -66,7 +70,10 @@ def main(data_dir: str, epochs: int, bs: int, lr: float | None,
     print(f"Finished in {(time.time() - t0)/60:.1f} min")
 
     stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    learn.export(out_path / f"swing_classifier_{stamp}.pth")
+    out_directory = (Path.cwd() / out_path).resolve()
+    learn.export(out_directory / f"swing_classifier_{stamp}.pkl")
+    print("Exported model to:", out_directory / f"swing_classifier_{stamp}.pkl")
+
 
     hist = pd.DataFrame(
         learn.recorder.values,
