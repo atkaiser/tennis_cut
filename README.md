@@ -6,6 +6,7 @@ This repository contains tooling for extracting tennis swing clips from raw matc
 
 - `src/label_videos/` – utilities for manually labeling videos.
 - `src/train_pop_detector/` – scripts for preparing data and training the audio classifier.
+- `src/train_swing_detector/` – scripts for preparing data and training the vision swing classifier.
 
 See the README files inside those folders for usage examples.
 
