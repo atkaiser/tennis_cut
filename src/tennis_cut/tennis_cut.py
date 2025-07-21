@@ -18,6 +18,7 @@ from typing import List, Sequence
 import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from utilities import PersonDetector, expand_box
+from PIL import Image
 
 import subprocess
 import torchaudio
@@ -135,6 +136,37 @@ class PopDetector:
         return peaks
 
 
+class SwingDetector:
+    """Image swing classifier from a fastai model."""
+
+    def __init__(self, model_path: Path, device: str | None = None) -> None:
+        import torch
+        from fastai.learner import load_learner
+
+        if device is None:
+            if torch.backends.mps.is_available():
+                device = "mps"
+            elif torch.cuda.is_available():
+                device = "cuda"
+            else:
+                device = "cpu"
+        self.device = torch.device(device)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                category=UserWarning,
+                message="load_learner` uses Python's insecure pickle",
+            )
+            learner = load_learner(model_path, cpu=self.device.type == "cpu")
+        learner.to(self.device)
+        learner.model.eval()
+        self.learner = learner
+
+    def is_swing(self, img) -> bool:
+        pred, _, _ = self.learner.predict(img)
+        return str(pred) != "no_shot"
+
+
 def extract_frame(video: Path, time: float, out_path: Path) -> None:
     """Extract a single frame from *video* at *time* seconds."""
 
@@ -156,6 +188,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument("input", help="Input video file")
     p.add_argument("-o", "--output-dir", default="./out/", help="Output directory")
     p.add_argument("--model", required=True, help="Path to trained audio model")
+    p.add_argument("--swing-model", help="Path to trained swing detector")
     p.add_argument("--clips", action="store_true", help="Export each swing separately")
     p.add_argument(
         "--slowmo",
@@ -335,6 +368,9 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
         detector = PopDetector(Path(args.model), device=args.device)
         impact_times = detector.find_impacts(wav_path)
         person_detector = PersonDetector(args.device)
+        swing_detector = None
+        if args.swing_model:
+            swing_detector = SwingDetector(Path(args.swing_model), device=args.device)
 
         swings: List[Swing] = []
         for i, t in enumerate(impact_times):
@@ -347,6 +383,12 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
                 _LOG.info("No person found for impact %d", i)
                 continue
             crop = expand_box(box, meta["resolution"])
+            if swing_detector is not None:
+                with Image.open(frame_path) as img:
+                    cropped = img.crop((crop[0], crop[1], crop[0] + crop[2], crop[1] + crop[3]))
+                    if not swing_detector.is_swing(cropped):
+                        _LOG.info("Impact %d not a swing", i)
+                        continue
             swings.append(
                 Swing(
                     index=len(swings),
