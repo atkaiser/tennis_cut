@@ -22,3 +22,7 @@ ruff .
 
 Ruff runs automatically on pull requests to the `main` branch via GitHub
 Actions.
+
+## Contributing
+
+See AGENTS.md for contributor guidelines, project structure, and development commands. Please run `ruff .` locally and include brief testing steps in your PR descriptions.
