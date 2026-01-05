@@ -1,10 +1,15 @@
 .aider*
 
+.vscode
 .DS_Store
 yolov8n.pt
+
+__pycache__/
 
 # Ignore data directories
 /meta/
 /videos/
 /test_videos/
 /wavs/
+/out/
+/dataset/

@@ -1,13 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `src/label_videos/`: GUI + scripts to annotate impacts; video prep utilities.
-- `src/train_pop_detector/`: prepare 0.25s audio windows and train the audio “pop” model.
-- `src/train_swing_detector/`: extract labeled frames and train a swing image classifier.
-- `src/tennis_cut/`: CLI to detect swings in videos and cut/stitch clips.
-- `src/utilities/`: shared helpers (ffprobe duration, YOLO person box, cropping).
-- `examples/`: metadata and instructions to download sample media for sanity checks.
-- Artifacts: `models/`, `dataset/`, `videos/`, `wavs/` (local outputs; not versioned).
+See `Directory overview` in main README.md
 
 ## Build, Test, and Development Commands
 - Setup (Python >= 3.11):
