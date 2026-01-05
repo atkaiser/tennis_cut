@@ -49,3 +49,34 @@ Actions.
 ## Contributing
 
 See AGENTS.md for contributor guidelines, project structure, and development commands. Please run `ruff .` locally and include brief testing steps in your PR descriptions.
+
+
+## TODO
+
+Below is a short example checklist you can use as a starting point for common tasks.
+
+- [ ] Download example media into `examples/videos` and `examples/wavs`:
+
+```bash
+wget 'https://www.dropbox.com/scl/fi/dce0wabuy0kss3xtcp7th/tester.MOV?rlkey=y8cwf7wssvswq1dxj12rxrrhw&st=i4yi7aeh&dl=0' -O examples/videos/tester.MOV
+wget 'https://www.dropbox.com/scl/fi/5pxrm1y9ij8qvls07ve03/tester.wav?rlkey=rxlfhsdxigrqf3zwye6jk8b1q&st=icvmew0l&dl=0' -O examples/wavs/tester.wav
+```
+
+- [ ] Prepare audio windows for training:
+
+```bash
+python src/train_pop_detector/prepare_audio_windows.py --videos_dir examples/videos --wav_dir examples/wavs --out_csv examples/meta/labled_windows.csv
+```
+
+- [ ] Train a quick smoke-run of the audio pop detector (1 epoch, CPU):
+
+```bash
+python src/train_pop_detector/train_audio_pop.py examples/meta/labled_windows.csv --epochs 1 --device cpu --bs 8
+```
+
+- [ ] Run the cutter on example media to produce clips:
+
+```bash
+python src/tennis_cut/tennis_cut.py examples/videos --model models/<audio_model>.pth --no-stitch
+```
+
