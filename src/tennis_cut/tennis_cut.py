@@ -191,15 +191,16 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Extract tennis swings from video")
     p.add_argument("input", help="Input video file")
     p.add_argument("-o", "--output-dir", default="./out/", help="Output directory")
-    p.add_argument("--model", required=True, help="Path to trained audio model")
-    p.add_argument("--swing-model", help="Path to trained swing detector")
+    p.add_argument("--audio_model", help="Path to trained audio model", default="models/audio_pop_20250623080658.pth")
+    p.add_argument("--swing_model", help="Path to trained swing detector")
     p.add_argument("--clips", action="store_true", help="Export each swing separately")
     p.add_argument(
         "--slowmo",
         type=float,
         help="Generate a slow-motion version; e.g. 0.5 for half speed",
+        default=0.0625
     )
-    p.add_argument("--metadata", action="store_true", help="Write JSON manifest")
+    p.add_argument("--no_metadata", action="store_true", help="Skip writing JSON manifest")
     p.add_argument("--no-stitch", action="store_true", help="Skip the merged video")
     p.add_argument(
         "--device",
@@ -369,7 +370,7 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
         tmpdir_path = Path(tmpdir)
         wav_path = tmpdir_path / "audio.wav"
         extract_audio(input_path, wav_path)
-        detector = PopDetector(Path(args.model), device=args.device)
+        detector = PopDetector(Path(args.audio_model), device=args.device)
         impact_times = detector.find_impacts(wav_path)
         person_detector = PersonDetector(args.device)
         swing_detector = None
@@ -487,7 +488,7 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
                     ]
                 )
 
-        if args.metadata:
+        if not args.no_metadata:
             records = [
                 {
                     "index": sw.index,

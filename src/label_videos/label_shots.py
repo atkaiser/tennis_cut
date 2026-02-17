@@ -1,6 +1,12 @@
 # label_shots.py
 
-"""Label impacts from existing JSON annotations.
+"""
+
+NOTE: THIS SCRIPT IS EFFECTIVELY DEPRECATED IT WAS NEEDED BEFORE
+TENNIS_ANNOTATE MARKED THE TYPE OF SHOT, BUT NOW THAT SHOULD
+ALWAYS HAPPEN, SO THIS ISN'T NEEDED.
+
+Label impacts from existing JSON annotations.
 
 This utility opens a simple PySide6 GUI that shows each impact frame from
 videos in a directory and lets the user assign a shot type using the
