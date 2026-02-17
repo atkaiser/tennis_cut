@@ -17,7 +17,6 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 3: Clip & Metadata Export** - Produce buffered swing clips, highlights, and metadata
 - [ ] **Phase 4: Review & Correction** - Review detections and correct false hits
 - [ ] **Phase 5: Labeling UI Ergonomics** - Faster, safer manual labeling for training data
-- [ ] **Phase 6: Documentation & Spec** - Reproducible README workflow and up-to-date spec
 
 ## Phase Details
 
@@ -69,26 +68,3 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Annotation UI displays the last 3 labeled hits for quick review.
   4. Annotation UI keeps the key controls panel at a fixed height while the video area resizes.
 **Plans**: TBD
-
-### Phase 6: Documentation & Spec
-**Goal**: Users can complete the example workflow with clear, current guidance
-**Depends on**: Phase 5
-**Requirements**: DOC-01, DOC-02
-**Success Criteria** (what must be TRUE):
-  1. User can follow the README example workflow and complete it successfully.
-  2. Spec describes current pipeline behavior, flags, and output artifacts.
-**Plans**: TBD
-
-## Progress
-
-**Execution Order:**
-Phases execute in numeric order: 2 → 2.1 → 2.2 → 3 → 3.1 → 4
-
-| Phase | Plans Complete | Status | Completed |
-|-------|----------------|--------|-----------|
-| 1. Media Intake & Deterministic Outputs | 0/TBD | Not started | - |
-| 2. Impact Detection | 0/TBD | Not started | - |
-| 3. Clip & Metadata Export | 0/TBD | Not started | - |
-| 4. Review & Correction | 0/TBD | Not started | - |
-| 5. Labeling UI Ergonomics | 0/TBD | Not started | - |
-| 6. Documentation & Spec | 0/TBD | Not started | - |

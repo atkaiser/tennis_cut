@@ -9,7 +9,7 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 
 ## Current Position
 
-Phase: 1 of 6 (Media Intake & Deterministic Outputs)
+Phase: 1 of 5 (Media Intake & Deterministic Outputs)
 Plan: 0 of TBD in current phase
 Status: Ready to plan
 Last activity: 2026-02-16 — Roadmap created
