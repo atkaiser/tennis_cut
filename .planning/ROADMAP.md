@@ -16,7 +16,6 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 2: Impact Detection** - Generate and verify impact timestamps automatically
 - [ ] **Phase 3: Clip & Metadata Export** - Produce buffered swing clips, highlights, and metadata
 - [ ] **Phase 4: Review & Correction** - Review detections and correct false hits
-- [ ] **Phase 5: Labeling UI Ergonomics** - Faster, safer manual labeling for training data
 
 ## Phase Details
 
@@ -56,15 +55,4 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Success Criteria** (what must be TRUE):
   1. User can review detected swings before finalizing outputs.
   2. User can adjust or remove false hits to produce a corrected set.
-**Plans**: TBD
-
-### Phase 5: Labeling UI Ergonomics
-**Goal**: Users can label impacts efficiently with fewer mistakes
-**Depends on**: Phase 4
-**Requirements**: LAB-01, LAB-02, LAB-03, LAB-04
-**Success Criteria** (what must be TRUE):
-  1. User can undo the last impact label in the annotation UI.
-  2. Annotation UI prevents new labels within 0.5 seconds of an existing label.
-  3. Annotation UI displays the last 3 labeled hits for quick review.
-  4. Annotation UI keeps the key controls panel at a fixed height while the video area resizes.
 **Plans**: TBD
