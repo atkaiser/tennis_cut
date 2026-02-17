@@ -78,26 +78,26 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PROC-01 | TBD | Pending |
-| PROC-02 | TBD | Pending |
-| DET-01 | TBD | Pending |
-| DET-02 | TBD | Pending |
-| OUT-01 | TBD | Pending |
-| OUT-02 | TBD | Pending |
-| OUT-03 | TBD | Pending |
-| REV-01 | TBD | Pending |
-| ORG-01 | TBD | Pending |
-| LAB-01 | TBD | Pending |
-| LAB-02 | TBD | Pending |
-| LAB-03 | TBD | Pending |
-| LAB-04 | TBD | Pending |
-| DOC-01 | TBD | Pending |
-| DOC-02 | TBD | Pending |
+| PROC-01 | Phase 1 | Pending |
+| PROC-02 | Phase 1 | Pending |
+| DET-01 | Phase 2 | Pending |
+| DET-02 | Phase 2 | Pending |
+| OUT-01 | Phase 3 | Pending |
+| OUT-02 | Phase 3 | Pending |
+| OUT-03 | Phase 3 | Pending |
+| REV-01 | Phase 4 | Pending |
+| ORG-01 | Phase 1 | Pending |
+| LAB-01 | Phase 5 | Pending |
+| LAB-02 | Phase 5 | Pending |
+| LAB-03 | Phase 5 | Pending |
+| LAB-04 | Phase 5 | Pending |
+| DOC-01 | Phase 6 | Pending |
+| DOC-02 | Phase 6 | Pending |
 
 **Coverage:**
 - v1 requirements: 15 total
-- Mapped to phases: 0
-- Unmapped: 15 ⚠️
+- Mapped to phases: 15
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-16*
