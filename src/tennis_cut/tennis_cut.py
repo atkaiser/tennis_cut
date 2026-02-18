@@ -213,7 +213,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument("input", help="Input video file")
     p.add_argument("-o", "--output-dir", default="./out/", help="Output directory")
     p.add_argument("--audio_model", help="Path to trained audio model", default="models/audio_pop_20250623080658.pth")
-    p.add_argument("--swing_model", help="Path to trained swing detector")
+    p.add_argument("--swing_model", help="Path to trained swing detector", default="models/swing_classifier_20250720232415.pkl")
     p.add_argument("--clips", action="store_true", help="Export each swing separately")
     p.add_argument(
         "--slowmo",
