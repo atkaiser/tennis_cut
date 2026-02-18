@@ -59,6 +59,26 @@ def run_cmd(cmd: Sequence[str]) -> None:
         )
 
 
+def move_input_video_to_output(input_path: Path, output_dir: Path) -> None:
+    """Move a processed input video into *output_dir* without clobbering files."""
+    if input_path.parent == output_dir:
+        return
+
+    dest = output_dir / input_path.name
+    if dest.exists():
+        stem, suffix = input_path.stem, input_path.suffix
+        idx = 1
+        while True:
+            candidate = output_dir / f"{stem}_{idx}{suffix}"
+            if not candidate.exists():
+                dest = candidate
+                break
+            idx += 1
+
+    shutil.move(str(input_path), str(dest))
+    _LOG.info("Moved processed video to %s", dest)
+
+
 @dataclass
 class Swing:
     index: int
@@ -424,6 +444,7 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
 
         if not swings:
             _LOG.warning("No swings detected")
+            move_input_video_to_output(input_path, output_dir)
             return 0
 
         clip_paths: List[Path] = []
@@ -525,6 +546,8 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
                     fh,
                     indent=2,
                 )
+
+    move_input_video_to_output(input_path, output_dir)
 
     return 0
 
