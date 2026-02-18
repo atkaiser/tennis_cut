@@ -448,6 +448,7 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
             return 0
 
         clip_paths: List[Path] = []
+        swing_extraction_times: List[float] = []
         for swing in swings:
             _LOG.info(
                 "Extracting swing %d: %.2f - %.2f (contact %.2f)",
@@ -456,6 +457,7 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
                 swing.end,
                 swing.contact,
             )
+            extraction_started_at = time.perf_counter()
             out_tmp = tmpdir_path / f"swing_{swing.index}.mp4"
             cut_swing(
                 input_path,
@@ -465,7 +467,20 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
                 swing.crop,
                 slowmo=args.slowmo,
             )
+            extraction_elapsed = time.perf_counter() - extraction_started_at
+            swing_extraction_times.append(extraction_elapsed)
+            print(
+                f"Swing {swing.index} extracted in {extraction_elapsed:.3f}s "
+                f"({swing.start:.3f}s-{swing.end:.3f}s)"
+            )
             clip_paths.append(out_tmp)
+
+        if swing_extraction_times:
+            avg_extraction_time = sum(swing_extraction_times) / len(swing_extraction_times)
+            print(
+                f"Average extraction time per swing: {avg_extraction_time:.3f}s "
+                f"({len(swing_extraction_times)} swings)"
+            )
 
         if args.clips:
             for i, src_path in enumerate(clip_paths):
