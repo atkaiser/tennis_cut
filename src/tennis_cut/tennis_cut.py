@@ -10,6 +10,7 @@ import json
 import logging
 import shutil
 import tempfile
+import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -347,6 +348,8 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
         _LOG.error("Input file not found: %s", input_path)
         return 1
 
+    print(f"Processing video: {input_path.name}")
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -378,7 +381,9 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
             swing_detector = SwingDetector(Path(args.swing_model), device=args.device)
 
         swings: List[Swing] = []
+        peak_processing_times: List[float] = []
         for i, t in enumerate(impact_times):
+            peak_started_at = time.perf_counter()
             start = t - PRE_CONTACT_BUFFER
             end = t + POST_CONTACT_BUFFER
             frame_path = tmpdir_path / f"impact_{i}.jpg"
@@ -405,6 +410,16 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
                     crop=crop,
                     label=label,
                 )
+            )
+            peak_elapsed = time.perf_counter() - peak_started_at
+            peak_processing_times.append(peak_elapsed)
+            print(f"Peak {i} at {t:.3f}s processed in {peak_elapsed:.3f}s")
+
+        if peak_processing_times:
+            avg_peak_time = sum(peak_processing_times) / len(peak_processing_times)
+            print(
+                f"Average processing time per peak: {avg_peak_time:.3f}s "
+                f"({len(peak_processing_times)} peaks)"
             )
 
         if not swings:
@@ -534,4 +549,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     main()
-
