@@ -3,7 +3,7 @@ name = "tennis-cut"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11.11"
+requires-python = ">=3.11.11,<3.12"
 dependencies = [
     "fastai>=2.8.1",
     "fasttransform>=0.0.2",

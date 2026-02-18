@@ -10,6 +10,8 @@ __pycache__/
 /meta/
 /videos/
 /test_videos/
+/to_process_vids/
+/processed_vids/
 /wavs/
 /out/
 /dataset/

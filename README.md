@@ -5,8 +5,8 @@ This repository contains tooling for extracting tennis swing clips from raw matc
 To process a video do this:
 1. Shoot in slow motion on an iPhone, you can use 4k/1080/240fps/120fps (Need to figure out a recommendation)
 2. Export the raw version on your iPhone to files (Necessary because if you just try to export it, apple mixes the different frame rates)
-3. Airdrop or send that raw file to your computer, put the file in `test_videos`
-4. Run the following command from the root of this directory: `uv sync && source .venv/bin/activate && python src/tennis_cut/tennis_cut.py -v test_videos`
+3. Airdrop or send that raw file to your computer, put the file in `to_process_vids`
+4. Run the following command from the root of this directory: `uv sync && source .venv/bin/activate && python src/tennis_cut/tennis_cut.py -v to_process_vids`
 
 ## Directory overview
 
