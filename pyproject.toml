@@ -1,7 +1,7 @@
 [project]
 name = "tennis-cut"
 version = "0.1.0"
-description = "Add your description here"
+description = "Cut up videos of tennis shots to just the shots"
 readme = "README.md"
 requires-python = ">=3.11.11,<3.12"
 dependencies = [
@@ -19,3 +19,6 @@ dependencies = [
     "tqdm>=4.65.0",
     "ultralytics>=8.1.0",
 ]
+
+[project.scripts]
+tennis-cut = "tennis_cut.tennis_cut:main"

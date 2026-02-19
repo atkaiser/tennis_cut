@@ -211,7 +211,7 @@ def extract_frame(video: Path, time: float, out_path: Path) -> None:
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Extract tennis swings from video")
     p.add_argument("input", help="Input video file")
-    p.add_argument("-o", "--output-dir", default="./out/", help="Output directory")
+    p.add_argument("-o", "--output-dir", default="./processed_vids/", help="Output directory")
     p.add_argument("--audio_model", help="Path to trained audio model", default="models/audio_pop_20250623080658.pth")
     p.add_argument("--swing_model", help="Path to trained swing detector", default="models/swing_classifier_20250720232415.pkl")
     p.add_argument("--clips", action="store_true", help="Export each swing separately")

@@ -12,6 +12,7 @@ __pycache__/
 /test_videos/
 /to_process_vids/
 /processed_vids/
+/tmp_videos/
 /wavs/
 /out/
 /dataset/
