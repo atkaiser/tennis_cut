@@ -1,0 +1,39 @@
+# VCS
+.git
+.gitignore
+
+# Virtualenvs
+.venv/
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Project-specific large dirs (adjust as needed)
+videos/
+to_process_vids/
+output_vids/
+processed_vids/
+out/
+.planning/
+examples/
+
+# If you download datasets / training artifacts
+data/
+datasets/
+runs/
+wandb/
+
+# If you don't need examples in the image, ignore them (optional)
+# examples/
+
+# Docker files themselves (optional)
+Dockerfile
+.dockerignore
