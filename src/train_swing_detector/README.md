@@ -5,5 +5,7 @@ Scripts for preparing the dataset and training the swing classification model. T
 ## prepare_swing_frames.py
 Extracts labelled frames from videos and writes them to a dataset directory that `train_swing_classifier.py` can consume.
 
+`uv run python src/train_swing_detector/prepare_swing_frames.py`
+
 ## train_swing_classifier.py
 Trains a vision model on the prepared dataset and exports the classifier for use by other tools.
