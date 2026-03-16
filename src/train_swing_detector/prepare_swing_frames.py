@@ -20,7 +20,9 @@ import pathlib
 import random
 import subprocess
 import sys
+
 from tqdm import tqdm
+
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from utilities import PersonDetector, expand_box, probe_duration
 
@@ -103,20 +105,45 @@ def probe_video_metadata(video: pathlib.Path) -> dict:
     }
 
 
+def canonical_frame_path(out_dir: pathlib.Path, video_stem: str, label: str, timestamp: float) -> pathlib.Path:
+    """Return the deterministic path for the exact shot timestamp frame."""
+    return out_dir / label / f"{video_stem}_{timestamp:.3f}.jpg"
+
+
+def is_video_processed(mp4: pathlib.Path, shots: list[dict], out_dir: pathlib.Path, neg_per_pos: int) -> bool:
+    """Return True when the output already contains this video's extracted dataset."""
+    labeled_shots = [shot for shot in shots if shot.get("type") is not None]
+    if not labeled_shots:
+        return True
+
+    for shot in labeled_shots:
+        label = shot["type"]
+        timestamp = float(shot["time"])
+        if not canonical_frame_path(out_dir, mp4.stem, label, timestamp).exists():
+            return False
+
+    expected_negatives = int(neg_per_pos * len(labeled_shots))
+    existing_negatives = len(list((out_dir / "no_shot").glob(f"{mp4.stem}_*.jpg")))
+    return existing_negatives >= expected_negatives
+
+
 # ----------------------------------------------------------------------
 def main(videos_dir: str, out_dir: str, neg_per_pos: int) -> None:
     """Process ``videos_dir`` and write labelled frames to ``out_dir``."""
 
+    out_dir_path = pathlib.Path(out_dir)
     videos = sorted(pathlib.Path(videos_dir).glob("*.MOV")) + \
              sorted(pathlib.Path(videos_dir).glob("*.mp4")) + \
              sorted(pathlib.Path(videos_dir).glob("*.mov"))
 
     pos_count = 0
     neg_count = 0
+    skipped_videos = 0
     detector = PersonDetector(device="mps")  # Default to MPS for macOS
 
     # Calculate total shots to process
     total_shots = 0
+    videos_to_process: list[tuple[pathlib.Path, list[dict]]] = []
     for mp4 in videos:
         json_path = mp4.with_suffix(".json")
         if not json_path.exists():
@@ -127,28 +154,16 @@ def main(videos_dir: str, out_dir: str, neg_per_pos: int) -> None:
         if not shots:
             continue
 
-        for shot in shots:
-            t = float(shot.get("time"))
-            label = shot.get("type")
-            if label is None:
-                continue
-            # Check if the main frame for this shot already exists
-            main_frame_path = pathlib.Path(out_dir) / label / f"{mp4.stem}_{t:.3f}.jpg"
-            if not main_frame_path.exists():
-                total_shots += 1
+        if is_video_processed(mp4, shots, out_dir_path, neg_per_pos):
+            skipped_videos += 1
+            continue
+
+        videos_to_process.append((mp4, shots))
+        total_shots += sum(1 for shot in shots if shot.get("type") is not None)
 
     # Initialize tqdm progress bar
     with tqdm(total=total_shots, desc="Processing shots", unit="shot") as pbar:
-        for mp4 in videos:
-            json_path = mp4.with_suffix(".json")
-            if not json_path.exists():
-                continue
-
-            data = json.load(open(json_path))
-            shots = data.get("shots", [])
-            if not shots:
-                continue
-
+        for mp4, shots in videos_to_process:
             duration = probe_duration(mp4)
             meta = probe_video_metadata(mp4)
             resolution = meta["resolution"]
@@ -165,7 +180,7 @@ def main(videos_dir: str, out_dir: str, neg_per_pos: int) -> None:
                 for dt in random_offsets:
                     frame_t = t + dt
                     if 0 <= frame_t <= duration:
-                        out_path = pathlib.Path(out_dir) / label / f"{mp4.stem}_{frame_t:.3f}.jpg"
+                        out_path = out_dir_path / label / f"{mp4.stem}_{frame_t:.3f}.jpg"
                         if out_path.exists():
                             continue  # Skip if the frame has already been extracted
                         extract_frame(mp4, frame_t, out_path, detector, resolution)
@@ -182,7 +197,10 @@ def main(videos_dir: str, out_dir: str, neg_per_pos: int) -> None:
                 resolution=resolution
             )
 
-    print(f"✅  Wrote {pos_count} shot frames and {neg_count} negatives to {out_dir}")
+    print(
+        f"✅  Wrote {pos_count} shot frames and {neg_count} negatives to {out_dir}. "
+        f"Skipped {skipped_videos} already processed videos."
+    )
 
 
 def sample_negatives(mp4: pathlib.Path, duration: float, shot_times: list[float], out_dir: str, num_neg: int, detector: PersonDetector, resolution: tuple[int, int], min_dist: float = 1.25) -> int:
