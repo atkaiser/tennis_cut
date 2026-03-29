@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import List, Sequence
 
 import sys
+
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from utilities import PersonDetector, expand_box
 from PIL import Image
@@ -92,7 +93,12 @@ class Swing:
 class PopDetector:
     """Audio impact detector using the trained CNN."""
 
-    def __init__(self, model_path: Path, stride_s: float = DEFAULT_STRIDE_S, device: str | None = None) -> None:
+    def __init__(
+        self,
+        model_path: Path,
+        stride_s: float = DEFAULT_STRIDE_S,
+        device: str | None = None,
+    ) -> None:
         import torch
         from fastai.learner import load_learner
 
@@ -106,13 +112,15 @@ class PopDetector:
                 device = "cpu"
         self.device = torch.device(device)
         with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=UserWarning,
-                                    message="load_learner` uses Python's insecure pickle")
+            warnings.filterwarnings(
+                "ignore",
+                category=UserWarning,
+                message="load_learner` uses Python's insecure pickle",
+            )
             learner = load_learner(model_path, cpu=self.device.type == "cpu")
         learner.to(self.device)
         learner.model.eval()
         self.learner = learner
-
 
     def find_impacts(self, wav_path: Path) -> List[float]:
         import torch
@@ -128,7 +136,10 @@ class PopDetector:
         if waveform.shape[1] < window:
             return []
 
-        starts = [sample_start / sr for sample_start in range(0, waveform.shape[1] - window + 1, stride)]
+        starts = [
+            sample_start / sr
+            for sample_start in range(0, waveform.shape[1] - window + 1, stride)
+        ]
         df = pd.DataFrame({"wav_path": str(wav_path), "start": starts})
         dl = self.learner.dls.test_dl(df, bs=BATCH_SIZE)
 
@@ -140,7 +151,7 @@ class PopDetector:
         for i, p in enumerate(probs):
             score = float(p)
             if score > PEAK_THRESHOLD:
-                center = i * self.stride_s + (WINDOW_DURATION/2)
+                center = i * self.stride_s + (WINDOW_DURATION / 2)
                 candidates.append((center, score))
 
         # Non-max suppression: only keep the highest-scoring peak in any
@@ -148,7 +159,10 @@ class PopDetector:
         candidates.sort(key=lambda c: c[1], reverse=True)
         kept: List[tuple[float, float]] = []
         for timestamp, score in candidates:
-            if all(abs(timestamp - kept_timestamp) >= PEAK_MIN_SEPARATION for kept_timestamp, _ in kept):
+            if all(
+                abs(timestamp - kept_timestamp) >= PEAK_MIN_SEPARATION
+                for kept_timestamp, _ in kept
+            ):
                 kept.append((timestamp, score))
         kept.sort(key=lambda c: c[0])
 
@@ -158,8 +172,8 @@ class PopDetector:
         return peaks
 
 
-class SwingDetector:
-    """Image swing classifier from a fastai model."""
+class ShotDetector:
+    """Binary image shot detector from a fastai model."""
 
     def __init__(self, model_path: Path, device: str | None = None) -> None:
         import torch
@@ -188,40 +202,90 @@ class SwingDetector:
         pred, _, _ = self.learner.predict(img)
         return str(pred)
 
-    def is_swing(self, img) -> bool:
-        return self.predict_label(img) != "no_shot"
+    def is_shot(self, img) -> bool:
+        return self.predict_label(img) == "shot"
+
+
+class ShotTypeClassifier:
+    """Shot-type classifier that runs after binary shot detection."""
+
+    def __init__(self, model_path: Path, device: str | None = None) -> None:
+        import torch
+        from fastai.learner import load_learner
+
+        if device is None:
+            if torch.backends.mps.is_available():
+                device = "mps"
+            elif torch.cuda.is_available():
+                device = "cuda"
+            else:
+                device = "cpu"
+        self.device = torch.device(device)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                category=UserWarning,
+                message="load_learner` uses Python's insecure pickle",
+            )
+            learner = load_learner(model_path, cpu=self.device.type == "cpu")
+        learner.to(self.device)
+        learner.model.eval()
+        self.learner = learner
+
+    def predict_label(self, img) -> str:
+        pred, _, _ = self.learner.predict(img)
+        return str(pred)
 
 
 def extract_frame(video: Path, time: float, out_path: Path) -> None:
     """Extract a single frame from *video* at *time* seconds."""
 
-    run_cmd([
-        "ffmpeg",
-        "-ss",
-        str(time),
-        "-i",
-        str(video),
-        "-frames:v",
-        "1",
-        str(out_path),
-        "-y",
-    ])
+    run_cmd(
+        [
+            "ffmpeg",
+            "-ss",
+            str(time),
+            "-i",
+            str(video),
+            "-frames:v",
+            "1",
+            str(out_path),
+            "-y",
+        ]
+    )
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Extract tennis swings from video")
     p.add_argument("input", help="Input video file")
-    p.add_argument("-o", "--output-dir", default="./processed_vids/", help="Output directory")
-    p.add_argument("--audio_model", help="Path to trained audio model", default="models/audio_pop_logmel_large_20260315224219.pth")
-    p.add_argument("--swing_model", help="Path to trained swing detector", default="models/swing_classifier_20250720232415.pkl")
+    p.add_argument(
+        "-o", "--output-dir", default="./processed_vids/", help="Output directory"
+    )
+    p.add_argument(
+        "--audio_model",
+        help="Path to trained audio model",
+        default="models/audio_pop_logmel_large_20260315224218.pth",
+    )
+    p.add_argument(
+        "--shot-model",
+        help="Path to trained binary shot detector",
+        default="models/shot_binary_classifier_20260328143535.pkl",
+    )
+    p.add_argument(
+        "--shot-type-model",
+        help="Path to trained shot-type classifier",
+        default="models/shot_type_classifier_20260328220857.pkl",
+    )
     p.add_argument("--clips", action="store_true", help="Export each swing separately")
     p.add_argument(
         "--slowmo",
         type=float,
         help="Generate a slow-motion version; e.g. 0.5 for half speed",
-        default=0.0625
+        default=0.0625,
     )
-    p.add_argument("--no_metadata", action="store_true", help="Skip writing JSON manifest")
+    p.add_argument(
+        "--no_metadata", action="store_true", help="Skip writing JSON manifest"
+    )
     p.add_argument("--no-stitch", action="store_true", help="Skip the merged video")
     p.add_argument(
         "--device",
@@ -247,9 +311,17 @@ def setup_logging(args: argparse.Namespace) -> None:
     )
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    if args.shot_type_model and not args.shot_model:
+        raise SystemExit("--shot-type-model requires --shot-model")
+
+
 def check_ffmpeg() -> None:
     if shutil.which("ffmpeg") is None:
-        print("ffmpeg not found. Install it first (e.g. `brew install ffmpeg`).", file=sys.stderr)
+        print(
+            "ffmpeg not found. Install it first (e.g. `brew install ffmpeg`).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
@@ -300,7 +372,6 @@ def extract_audio(video: Path, wav_path: Path) -> None:
     )
 
 
-
 def cut_swing(
     video: Path,
     start: float,
@@ -328,7 +399,7 @@ def cut_swing(
     if slowmo is not None:
         if not 0 < slowmo <= 1:
             raise ValueError("slowmo must be in (0, 1]")
-        v_filters.append(f"setpts={1/slowmo:.6f}*PTS")
+        v_filters.append(f"setpts={1 / slowmo:.6f}*PTS")
 
     if v_filters:
         cmd += ["-filter:v", ",".join(v_filters)]
@@ -396,9 +467,14 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
         detector = PopDetector(Path(args.audio_model), device=args.device)
         impact_times = detector.find_impacts(wav_path)
         person_detector = PersonDetector(args.device)
-        swing_detector = None
-        if args.swing_model:
-            swing_detector = SwingDetector(Path(args.swing_model), device=args.device)
+        shot_detector = None
+        shot_type_classifier = None
+        if args.shot_model:
+            shot_detector = ShotDetector(Path(args.shot_model), device=args.device)
+        if args.shot_type_model:
+            shot_type_classifier = ShotTypeClassifier(
+                Path(args.shot_type_model), device=args.device
+            )
 
         swings: List[Swing] = []
         peak_processing_times: List[float] = []
@@ -414,13 +490,16 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
                 continue
             crop = expand_box(box, meta["resolution"])
             label = None
-            if swing_detector is not None:
+            if shot_detector is not None:
                 with Image.open(frame_path) as img:
-                    cropped = img.crop((crop[0], crop[1], crop[0] + crop[2], crop[1] + crop[3]))
-                    label = swing_detector.predict_label(cropped)
-                    if label == "no_shot":
+                    cropped = img.crop(
+                        (crop[0], crop[1], crop[0] + crop[2], crop[1] + crop[3])
+                    )
+                    if not shot_detector.is_shot(cropped):
                         _LOG.info("Impact %d not a swing", i)
                         continue
+                    if shot_type_classifier is not None:
+                        label = shot_type_classifier.predict_label(cropped)
             swings.append(
                 Swing(
                     index=len(swings),
@@ -476,7 +555,9 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
             clip_paths.append(out_tmp)
 
         if swing_extraction_times:
-            avg_extraction_time = sum(swing_extraction_times) / len(swing_extraction_times)
+            avg_extraction_time = sum(swing_extraction_times) / len(
+                swing_extraction_times
+            )
             print(
                 f"Average extraction time per swing: {avg_extraction_time:.3f}s "
                 f"({len(swing_extraction_times)} swings)"
@@ -490,11 +571,11 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
 
         label_groups: dict[str, List[Path]] = {}
         for swing, path in zip(swings, clip_paths):
-            key = swing.label or "swing"
+            key = swing.label or "shot"
             label_groups.setdefault(key, []).append(path)
 
         if not args.no_stitch:
-            if args.swing_model and args.slowmo:
+            if args.shot_type_model and args.slowmo:
                 for label, paths in label_groups.items():
                     _LOG.info("Stitching %s swings", label)
                     concat_file = tmpdir_path / f"concat_{label}.txt"
@@ -570,6 +651,7 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     setup_logging(args)
+    validate_args(args)
     check_ffmpeg()
 
     input_path = Path(args.input)

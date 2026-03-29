@@ -1,6 +1,6 @@
 # Tennis Cut
 
-This repository contains tooling for extracting tennis swing clips from raw match footage. The system uses an audio "pop" detector to find candidate impact moments and then verifies them with a lightweight vision model. Full design details are available in [spec.md](spec.md).
+This repository contains tooling for extracting tennis swing clips from raw match footage. The system uses an audio "pop" detector to find candidate impact moments, a binary vision model to decide `shot` vs `no_shot`, and an optional shot-type classifier to label retained shots. Full design details are available in [spec.md](spec.md).
 
 To process a video do this:
 1. Shoot in slow motion on an iPhone, you can use 4k/1080/240fps/120fps (120fps/4k is recommended)
@@ -22,7 +22,7 @@ is extracted by running `TODO`
 - `src/` – application source code and scripts; subpackages: (See the README files inside `src/` subfolders too)
 	- `label_videos/` – GUI and scripts to annotate impacts (video prep + annotation tools).
 	- `train_pop_detector/` – prepare 0.25s audio windows and train the audio "pop" model.
-	- `train_swing_detector/` – extract labeled frames and train the swing image classifier.
+	- `train_swing_detector/` – extract labeled frames and train the binary shot detector plus shot-type classifier.
 	- `tennis_cut/` – CLI for detecting swings in videos and cutting/stitching clips.
 	- `utilities/` – shared helpers (ffprobe duration, YOLO person box, cropping).
 
