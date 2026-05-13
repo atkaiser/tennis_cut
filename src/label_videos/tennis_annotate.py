@@ -17,13 +17,16 @@ Key bindings
 
     d  : mark forehand
     w  : mark backhand
+    x  : mark backhand slice
     e  : mark volley
     r  : mark serve
+    o  : mark overhead
 
 There is **no candidate/skip logic**. Scrub through the clip and press the
 appropriate key whenever the ball makes contact. Impacts are written to
 `<video>.json` beside the source file with the selected shot type.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,22 +49,33 @@ VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv"}
 # Helpers
 ###############################################################################
 
+
 # Get frames per second from video using ffprobe (defaults to 30 if unavailable).
 def probe_fps(video_path: pathlib.Path) -> float:
     """Return frames‑per‑second using ffprobe (falls back to 30 fps if unknown)."""
     try:
-        out = subprocess.check_output([
-            "ffprobe", "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=r_frame_rate",
-            "-of", "default=nokey=1:noprint_wrappers=1",
-            str(video_path),
-        ], text=True).strip()
+        out = subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=r_frame_rate",
+                "-of",
+                "default=nokey=1:noprint_wrappers=1",
+                str(video_path),
+            ],
+            text=True,
+        ).strip()
         if "/" in out:
             num, den = map(int, out.split("/"))
             return num / den
         return float(out)
     except Exception:
         return 30.0
+
 
 ###############################################################################
 # Data model
@@ -84,6 +98,7 @@ class AnnotationState:
     def step_ms(self, frames: int) -> int:
         return round(frames * 1000 / self.fps)
 
+
 ###############################################################################
 # GUI
 ###############################################################################
@@ -98,7 +113,9 @@ class Annotator(QWidget):
         self.player = QMediaPlayer(self)
         self.player.setSource(QUrl.fromLocalFile(str(st.video)))
         self.player.setAudioOutput(QAudioOutput())
-        self.player.errorOccurred.connect(lambda c, t: print("QMediaPlayer error:", c, t))
+        self.player.errorOccurred.connect(
+            lambda c, t: print("QMediaPlayer error:", c, t)
+        )
 
         # Start/stop once so the first video frame is rendered instead of a black box
         self.player.play()
@@ -108,12 +125,18 @@ class Annotator(QWidget):
         video_widget = QVideoWidget(self)
         self.player.setVideoOutput(video_widget)
 
-        self.label = QLabel("0.000 s", alignment=Qt.AlignCenter, parent=self)
-        self.label.setStyleSheet("font-size:18px; padding:4px;")
+        self.label = QLabel(
+            "0.000 s", alignment=Qt.AlignCenter | Qt.AlignTop, parent=self
+        )
+        self.label.setWordWrap(True)
+        self.label.setMaximumHeight(240)
+        self.label.setStyleSheet("font-size:14px; padding:6px;")
 
         layout = QVBoxLayout(self)
-        layout.addWidget(video_widget)
-        layout.addWidget(self.label)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(video_widget, 1)
+        layout.addWidget(self.label, 0)
 
         self.showMaximized()
 
@@ -137,10 +160,14 @@ class Annotator(QWidget):
             self._mark_impact("forehand")
         elif k == Qt.Key_W:
             self._mark_impact("backhand")
+        elif k == Qt.Key_X:
+            self._mark_impact("backhand_slice")
         elif k == Qt.Key_E:
             self._mark_impact("volley")
         elif k == Qt.Key_R:
             self._mark_impact("serve")
+        elif k == Qt.Key_O:
+            self._mark_impact("overhead")
         elif k == Qt.Key_Z:
             self._mark_done()
         elif k == Qt.Key_V:
@@ -180,35 +207,29 @@ class Annotator(QWidget):
         total_s = total_ms / 1000.0 if total_ms else 0
         self.label.setText(
             f"{cur_s:.3f} s / {total_s:.3f} s   |   impacts: {len(self.st.impacts)}{' (DONE)' if self.st.done else ''}\n"
-            "Key bindings:\n"
-            "a: backward 10 frames\n" \
-            "s: backward 1 frame\n\n" \
-            "f: forward 1 frame\n" \
-            "v: forward 10 frames\n" \
-            "g: forward 250 ms\n" \
-            "h: forward 500 ms\n" \
-            "b: forward 1 sec\n" \
-            "d: mark forehand\n" \
-            "w: mark backhand\n" \
-            "e: mark volley\n" \
-            "r: mark serve\n" \
-            "z: mark done\n" \
-            "q: quit"
+            "Keys: a:-10f  s:-1f  f:+1f  v:+10f  g:+250ms  h:+500ms  b:+1s  "
+            "d:forehand  w:backhand  x:bh_slice  e:volley  r:serve  o:overhead  z:done  q:quit"
         )
 
     # Save the list of impact annotations to a JSON file located next to the video file.
     def _save_json(self):
         out = self.st.video.with_suffix(".json")
-        json.dump({
-            "video": self.st.video.name,
-            "impacts": self.st.impacts,
-            "shots": [shot.__dict__ for shot in self.st.shots],
-            "done": self.st.done,
-        }, open(out, "w"), indent=2)
+        json.dump(
+            {
+                "video": self.st.video.name,
+                "impacts": self.st.impacts,
+                "shots": [shot.__dict__ for shot in self.st.shots],
+                "done": self.st.done,
+            },
+            open(out, "w"),
+            indent=2,
+        )
+
 
 ###############################################################################
 # Main
 ###############################################################################
+
 
 # Launch the annotation GUI for the specified video file.
 def annotate_video(path: pathlib.Path):
@@ -250,8 +271,12 @@ def find_videos(root: pathlib.Path):
 
 # Parse command-line arguments and execute the annotation process for each video file.
 def main():
-    ap = argparse.ArgumentParser(description="Manually annotate tennis ball impacts in videos.")
-    ap.add_argument("directory", type=pathlib.Path, help="Directory containing video files")
+    ap = argparse.ArgumentParser(
+        description="Manually annotate tennis ball impacts in videos."
+    )
+    ap.add_argument(
+        "directory", type=pathlib.Path, help="Directory containing video files"
+    )
     args = ap.parse_args()
 
     vids = find_videos(args.directory)
