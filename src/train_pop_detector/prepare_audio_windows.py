@@ -12,7 +12,7 @@ from each impact to balance the dataset.
 
 Usage example (if run from the top of the project):
 
-   python prepare_audio_windows.py
+   python prepare_audio_windows.py --videos_dir videos_train
 """
 
 import argparse
@@ -22,9 +22,10 @@ import pathlib
 import random
 import subprocess
 import sys
+from typing import List, Tuple
+
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from utilities import probe_duration
-from typing import List, Tuple
 
 # -----------------------  constants / defaults  -----------------------
 WIN_SEC          = 0.25         # length of each training window in seconds
@@ -82,11 +83,16 @@ def main(
              sorted(pathlib.Path(videos_dir).glob("*.mov"))
 
     rows: List[Tuple[str, float, str]] = []
+    processed_videos = 0
+    skipped_videos = 0
+    pos_rows = 0
+    neg_rows = 0
 
     for mp4 in videos:
         json_path = mp4.with_suffix(".json")
         if not json_path.exists():
             print(f"No JSON for {mp4.name}; skipping.")
+            skipped_videos += 1
             continue
 
         wav_path  = pathlib.Path(wav_dir) / f"{mp4.stem}.wav"
@@ -94,21 +100,25 @@ def main(
         duration  = probe_duration(wav_path)          # seconds
 
         meta   = json.load(open(json_path))
+        processed_videos += 1
         for t in meta["impacts"]:
             # positive
             rows.append(row(wav_path, t - WIN_SEC/2, "pos"))
+            pos_rows += 1
 
             # near negatives
             for _ in range(neg_per_pos):
                 neg_t = sample_near_neg(t)
                 if 0 < neg_t < duration - WIN_SEC:
                     rows.append(row(wav_path, neg_t - WIN_SEC/2, "neg"))
+                    neg_rows += 1
 
             # far negatives
             for _ in range(far_neg_per_pos):
                 neg_t = sample_far_neg(t)
                 if 0 < neg_t < duration - WIN_SEC:
                     rows.append(row(wav_path, neg_t - WIN_SEC/2, "neg"))
+                    neg_rows += 1
 
     random.shuffle(rows)
     pathlib.Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
@@ -118,7 +128,15 @@ def main(
         w.writerow(["wav_path", "start", "label"])
         w.writerows(rows)
 
-    print(f"✅  Wrote {len(rows):,} rows ➜ {out_csv}")
+    print(
+        "Summary:",
+        f"videos_dir={videos_dir}",
+        f"processed_videos={processed_videos}",
+        f"skipped_videos={skipped_videos}",
+        f"pos_rows={pos_rows}",
+        f"neg_rows={neg_rows}",
+    )
+    print(f"Wrote {len(rows):,} rows -> {out_csv}")
 
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
@@ -128,19 +146,19 @@ if __name__ == "__main__":
     ap.add_argument(
         "--videos_dir",
         type=str,
-        default="videos",
+        default="videos_train",
         help="directory with labelled video files (.mp4/.MOV) and matching JSON",
     )
     ap.add_argument(
         "--wav_dir",
         type=str,
-        default="wavs",
+        default="wavs_train",
         help="where to store extracted 48 kHz mono wav files",
     )
     ap.add_argument(
         "--out_csv",
         type=str,
-        default="meta/labled_windows.csv",
+        default="meta/audio_train_windows.csv",
         help="path to CSV listing wav paths, start times and labels",
     )
     ap.add_argument(
