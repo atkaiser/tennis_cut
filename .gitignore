@@ -9,6 +9,10 @@ __pycache__/
 # Ignore data directories
 /meta/
 /videos/
+/videos_train/
+/videos_test/
+/wavs_train/
+/wavs_test/
 /test_videos/
 /to_process_vids/
 /processed_vids/
