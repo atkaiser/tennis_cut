@@ -20,3 +20,5 @@ __pycache__/
 /wavs/
 /out/
 /dataset/
+/dataset_train/
+/dataset_test/

@@ -240,13 +240,13 @@ if __name__ == "__main__":
     ap.add_argument(
         "--videos_dir",
         type=str,
-        default="videos",
+        default="videos_train",
         help="directory with labelled video files (.mp4/.MOV) and matching JSON",
     )
     ap.add_argument(
         "--out_dir",
         type=str,
-        default="dataset",
+        default="dataset_train",
         help="directory to write extracted frames organised by label",
     )
     ap.add_argument(
