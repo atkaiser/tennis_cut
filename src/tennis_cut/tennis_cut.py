@@ -264,7 +264,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument(
         "--audio_model",
         help="Path to trained audio model",
-        default="models/audio_pop_logmel_large_20260315224218.pth",
+        default="models/audio_pop_logmel_large_20260512231349.pth",
     )
     p.add_argument(
         "--shot-model",
