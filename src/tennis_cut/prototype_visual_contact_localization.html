@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PROTOTYPE — Visual contact localization</title>
+  <style>
+    :root { --ink:#17202a; --muted:#667085; --line:#d9e0e7; --paper:#fff; --wash:#f4f7f9; --accent:#147d72; --bad:#b42318; --warn:#a15c00; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:var(--wash); font:16px/1.5 system-ui,-apple-system,sans-serif; }
+    main { max-width:1080px; margin:0 auto; padding:40px 24px 72px; }
+    h1,h2,h3 { line-height:1.15; }
+    h1 { margin:6px 0 12px; font-size:clamp(30px,5vw,48px); }
+    h2 { margin-top:0; font-size:20px; }
+    .eyebrow { color:var(--accent); font-weight:750; letter-spacing:.08em; text-transform:uppercase; font-size:12px; }
+    .lede { max-width:820px; font-size:19px; color:#344054; }
+    .caveat { border-left:4px solid var(--warn); padding:10px 14px; background:#fff8eb; margin:24px 0; }
+    .grid { display:grid; grid-template-columns:1.35fr .65fr; gap:18px; margin-top:24px; }
+    .card { background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:20px; box-shadow:0 2px 8px #17202a0a; }
+    .state { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .metric { border:1px solid var(--line); border-radius:9px; padding:12px; }
+    .metric span { display:block; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+    .metric strong { display:block; margin-top:3px; font-size:20px; }
+    .verdict { grid-column:1/-1; padding:14px; border-radius:9px; font-weight:700; }
+    .verdict.fatal { background:#fee4e2; color:var(--bad); }
+    .verdict.pass { background:#dff7ec; color:#067647; }
+    .controls { display:flex; flex-wrap:wrap; gap:8px; }
+    button { border:1px solid #aab4bf; background:white; color:var(--ink); border-radius:8px; padding:9px 12px; cursor:pointer; font:inherit; }
+    button:hover,button.active { border-color:var(--accent); background:#e8f5f3; }
+    .approach { display:grid; gap:10px; margin-top:14px; }
+    .approach button { text-align:left; padding:13px; }
+    .approach small { display:block; color:var(--muted); margin-top:3px; }
+    svg { width:100%; height:220px; background:#fbfcfd; border:1px solid var(--line); border-radius:8px; overflow:visible; }
+    .axis { stroke:#aab4bf; stroke-width:1; }
+    .contact { stroke:var(--bad); stroke-width:2; stroke-dasharray:5 4; }
+    .curve { fill:none; stroke:var(--accent); stroke-width:2.5; }
+    .legend { display:flex; gap:18px; margin-top:8px; color:var(--muted); font-size:13px; }
+    .dot { display:inline-block; width:10px; height:3px; margin-right:5px; vertical-align:middle; background:var(--accent); }
+    .dot.contact-dot { background:var(--bad); }
+    .facts { margin:14px 0 0; padding-left:20px; }
+    .walkthroughs { margin-top:18px; }
+    .tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+    .steps { display:grid; gap:10px; }
+    .step { display:flex; gap:12px; align-items:center; text-align:left; }
+    .step b { display:grid; place-items:center; min-width:28px; height:28px; border-radius:50%; background:#e8f5f3; color:var(--accent); }
+    .step.done { opacity:.5; }
+    .decision { margin-top:18px; border:2px solid var(--accent); }
+    .decision-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+    .decision-grid article { border:1px solid var(--line); border-radius:9px; padding:13px; }
+    .decision-grid article.recommended { border-color:var(--accent); background:#f0fbf9; }
+    code { background:#edf1f4; padding:2px 5px; border-radius:4px; }
+    @media (max-width:760px) { .grid,.decision-grid { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Throwaway prototype · not production</div>
+  <h1>Can a silent pro swing yield one trustworthy contact timestamp?</h1>
+  <p class="lede">This demo asks whether the existing single-frame <em>shot</em> classifier can be scanned as a contact locator, or whether <strong>Choose visual contact localization for silent pro swings</strong> should specify a dedicated temporal contact model and explicit fatal-ambiguity states.</p>
+  <div class="caveat"><strong>Evidence boundary:</strong> these traces come from five labeled swings in the repository’s user-video fixture, evaluated without audio. They test the existing model’s score shape; they do not establish accuracy on professional footage.</div>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Current visual score around human-labeled contact</h2>
+      <svg id="chart" viewBox="0 0 760 220" role="img" aria-label="Shot classifier score by milliseconds from contact"></svg>
+      <div class="legend"><span><i class="dot"></i>Current shot score</span><span><i class="dot contact-dot"></i>Human-labeled contact</span></div>
+      <div class="controls" id="swingButtons"></div>
+      <ul class="facts" id="facts"></ul>
+    </div>
+
+    <div class="card">
+      <h2>Current state</h2>
+      <div class="state">
+        <div class="metric"><span>Swing</span><strong id="swingState"></strong></div>
+        <div class="metric"><span>Raw peak error</span><strong id="errorState"></strong></div>
+        <div class="metric"><span>High-score plateau</span><strong id="plateauState"></strong></div>
+        <div class="metric"><span>Peak margin</span><strong id="marginState"></strong></div>
+        <div class="verdict fatal" id="verdictState"></div>
+      </div>
+      <h3>Candidate approach</h3>
+      <div class="approach" id="approachButtons"></div>
+    </div>
+  </section>
+
+  <section class="card walkthroughs">
+    <h2>Guided walkthroughs</h2>
+    <div class="tabs" id="tabs"></div>
+    <p id="scenarioDescription"></p>
+    <div class="steps" id="steps"></div>
+  </section>
+
+  <section class="card decision">
+    <h2>Decision this prototype supports</h2>
+    <div class="decision-grid">
+      <article>
+        <strong>Scan the existing classifier</strong>
+        <p>Reject. It recognizes a broad swing-like pose. Four peak timestamps happen to land near contact, but one is 272 ms early and no trace has a unique peak.</p>
+      </article>
+      <article class="recommended">
+        <strong>Dedicated temporal contact model</strong>
+        <p>Recommend. Score each candidate frame from a short before/after sequence and train specifically against human-labeled contact frames.</p>
+      </article>
+      <article>
+        <strong>Racket/ball geometry</strong>
+        <p>Do not require for the first approach. It adds two difficult detectors and fails when a tiny ball is blurred or occluded; revisit only if the temporal model misses its accuracy contract.</p>
+      </article>
+    </div>
+    <p><strong>Proposed interface:</strong> one module accepts an eligible pro video and returns either one <code>contact timestamp</code> with calibrated evidence or a fatal result: <code>low confidence</code>, <code>competing peaks</code>, <code>boundary peak</code>, or <code>ineligible footage</code>. Exact thresholds belong to the downstream accuracy-contract decision.</p>
+  </section>
+</main>
+
+<script>
+// Portable logic module: no DOM access.
+const ContactDecision = (() => {
+  const APPROACHES = {
+    existing: {name:"Existing shot-score scan", note:"Empirical fixture evidence", status:"reject"},
+    temporal: {name:"Dedicated temporal contact score", note:"Recommended architecture", status:"recommend"},
+    geometry: {name:"Racket/ball geometry", note:"Conditional fallback", status:"defer"}
+  };
+
+  function assessExisting(swing) {
+    const reasons = [];
+    if (swing.peakMargin < 0.05) reasons.push("competing peaks");
+    if (swing.plateauMs > 100) reasons.push("broad score plateau");
+    return {kind: reasons.length ? "fatal" : "pass", reasons};
+  }
+
+  function reduce(state, action) {
+    if (action.type === "selectSwing") return {...state, swingIndex:action.index};
+    if (action.type === "selectApproach") return {...state, approach:action.approach};
+    if (action.type === "reset") return initialState();
+    return state;
+  }
+
+  function initialState() { return {swingIndex:0, approach:"existing"}; }
+  return {APPROACHES, assessExisting, reduce, initialState};
+})();
+</script>
+
+<script>
+const SWINGS = [
+  {type:"forehand",errorMs:31.3,plateauMs:341.8,peakMargin:.003381,curve:[[-452,.992],[-419,.995],[-386,.989],[-352,.969],[-319,.897],[-285,.748],[-252,.9],[-219,.627],[-185,.867],[-152,.251],[-119,.831],[-85,.97],[-52,.941],[-19,.994],[15,.999],[48,.999],[81,.958],[115,.78],[148,.501],[181,.118],[215,.03],[248,.299],[281,.002],[315,.002],[348,.009],[382,.002],[415,.008],[448,.005]]},
+  {type:"backhand",errorMs:13.1,plateauMs:525.2,peakMargin:.000941,curve:[[-454,.998],[-420,.998],[-387,.991],[-354,.972],[-320,.965],[-287,.987],[-254,.992],[-220,.989],[-187,.965],[-154,.934],[-120,.834],[-87,.998],[-54,.996],[-20,.996],[13,.999],[46,.994],[80,.587],[113,.228],[147,.949],[180,.089],[213,0],[247,0],[280,0],[313,0],[347,0],[380,0],[413,.005],[447,.001]]},
+  {type:"volley",errorMs:39.3,plateauMs:608.6,peakMargin:.000529,curve:[[-453,.823],[-419,.959],[-386,.943],[-353,.811],[-319,.822],[-286,.701],[-252,.587],[-219,.75],[-186,.754],[-152,.905],[-119,.978],[-86,.999],[-52,.999],[-19,.999],[14,.999],[48,1],[81,.996],[114,.997],[148,.999],[181,.996],[214,.997],[248,.999],[281,.995],[314,.879],[348,.77],[381,.934],[414,.975],[448,.769]]},
+  {type:"forehand",errorMs:-271.9,plateauMs:375.2,peakMargin:.000111,curve:[[-447,.997],[-414,.995],[-380,.994],[-347,.996],[-314,.99],[-280,.996],[-247,.993],[-214,.964],[-180,.964],[-147,.935],[-113,.915],[-80,.968],[-47,.942],[-13,.878],[20,.794],[53,.606],[87,.447],[120,.636],[153,.012],[187,.003],[220,0],[253,0],[287,0],[320,0],[353,0],[387,0],[420,0],[453,0]]},
+  {type:"serve",errorMs:-12.9,plateauMs:475.2,peakMargin:.00075,curve:[[-446,.052],[-413,.357],[-380,.384],[-346,.123],[-313,.047],[-280,.16],[-246,.16],[-213,.457],[-180,.745],[-146,.96],[-113,.876],[-80,.996],[-46,.993],[-13,.997],[20,.969],[54,.942],[87,.966],[121,.907],[154,.805],[187,.745],[221,.833],[254,.939],[287,.958],[321,.954],[354,.957],[387,.963],[421,.974],[454,.988]]}
+];
+
+const SCENARIOS = [
+  {name:"The tempting success",description:"A near-contact peak can look like validation until you inspect whether the peak is unique.",steps:[{label:"Show the 13 ms backhand",action:{type:"selectSwing",index:1}},{label:"Inspect the existing score scan",action:{type:"selectApproach",approach:"existing"}}]},
+  {name:"The silent failure",description:"The same approach can select preparation rather than contact while still emitting a near-perfect score.",steps:[{label:"Show the missed forehand",action:{type:"selectSwing",index:3}},{label:"Keep the existing score scan",action:{type:"selectApproach",approach:"existing"}}]},
+  {name:"The proposed seam",description:"Separate contact localization behind one deep module that either returns one timestamp or names a fatal ambiguity.",steps:[{label:"Show the broad volley plateau",action:{type:"selectSwing",index:2}},{label:"Choose the temporal contact model",action:{type:"selectApproach",approach:"temporal"}}]}
+];
+
+let state = ContactDecision.initialState();
+let activeScenario = 0;
+let completedSteps = 0;
+const $ = id => document.getElementById(id);
+
+function dispatch(action) { state = ContactDecision.reduce(state, action); render(); }
+
+function renderChart(swing) {
+  const x = ms => 30 + ((ms + 460) / 920) * 700;
+  const y = score => 190 - score * 160;
+  const points = swing.curve.map(([ms,score]) => `${x(ms)},${y(score)}`).join(" ");
+  $("chart").innerHTML = `
+    <line class="axis" x1="30" y1="190" x2="730" y2="190"/><line class="axis" x1="30" y1="30" x2="30" y2="190"/>
+    <line class="contact" x1="${x(0)}" y1="24" x2="${x(0)}" y2="194"/>
+    <polyline class="curve" points="${points}"/>
+    <text x="30" y="210" font-size="12" fill="#667085">−450 ms</text><text x="${x(0)-22}" y="210" font-size="12" fill="#b42318">contact</text><text x="684" y="210" font-size="12" fill="#667085">+450 ms</text>`;
+}
+
+function render() {
+  const swing = SWINGS[state.swingIndex];
+  const assessment = ContactDecision.assessExisting(swing);
+  $("swingState").textContent = `${state.swingIndex+1} · ${swing.type}`;
+  $("errorState").textContent = `${swing.errorMs > 0 ? "+" : ""}${swing.errorMs} ms`;
+  $("plateauState").textContent = `${swing.plateauMs} ms`;
+  $("marginState").textContent = swing.peakMargin.toFixed(4);
+  const verdict = $("verdictState");
+  verdict.className = `verdict ${assessment.kind}`;
+  verdict.textContent = state.approach === "existing"
+    ? `Fatal ambiguity: ${assessment.reasons.join(" + ")}`
+    : state.approach === "temporal"
+      ? "Prototype verdict: use dedicated contact evidence; calibrate pass/fail later"
+      : "Deferred: geometry is a fallback, not the first interface";
+  renderChart(swing);
+  $("facts").innerHTML = `<li>The raw maximum is ${Math.abs(swing.errorMs).toFixed(1)} ms from the labeled contact.</li><li>Scores remain near their maximum across ${swing.plateauMs.toFixed(1)} ms.</li><li>The best and runner-up peaks differ by only ${swing.peakMargin.toFixed(4)}.</li>`;
+  $("swingButtons").innerHTML = SWINGS.map((s,i)=>`<button class="${i===state.swingIndex?'active':''}" onclick="dispatch({type:'selectSwing',index:${i}})">Swing ${i+1}: ${s.type}</button>`).join("");
+  $("approachButtons").innerHTML = Object.entries(ContactDecision.APPROACHES).map(([key,a])=>`<button class="${key===state.approach?'active':''}" onclick="dispatch({type:'selectApproach',approach:'${key}'})"><strong>${a.name}</strong><small>${a.note} · ${a.status}</small></button>`).join("");
+  renderScenario();
+}
+
+function startScenario(index) { activeScenario=index; completedSteps=0; state=ContactDecision.initialState(); render(); }
+function doStep(index) { const step=SCENARIOS[activeScenario].steps[index]; dispatch(step.action); completedSteps=Math.max(completedSteps,index+1); renderScenario(); }
+function renderScenario() {
+  $("tabs").innerHTML=SCENARIOS.map((s,i)=>`<button class="${i===activeScenario?'active':''}" onclick="startScenario(${i})">${s.name}</button>`).join("");
+  const scenario=SCENARIOS[activeScenario];
+  $("scenarioDescription").textContent=scenario.description;
+  $("steps").innerHTML=scenario.steps.map((s,i)=>`<button class="step ${i<completedSteps?'done':''}" onclick="doStep(${i})"><b>${i+1}</b><span>${s.label}</span></button>`).join("");
+}
+
+render();
+</script>
+</body>
+</html>
