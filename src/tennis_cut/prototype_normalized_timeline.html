@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE — Normalized comparison timeline</title>
+  <style>
+    :root { --bg:#f4f1e9; --ink:#16211d; --muted:#66706c; --paper:#fffdf8; --line:#d4d0c6; --accent:#087f68; --accent2:#d8f3eb; --bad:#9f332d; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 ui-sans-serif,system-ui,sans-serif; }
+    main { width:min(1180px,calc(100% - 32px)); margin:auto; padding:30px 0 70px; }
+    h1 { margin:4px 0 8px; font-size:clamp(28px,4vw,46px); line-height:1.05; }
+    h2 { font-size:17px; margin:0 0 10px; } p { margin:6px 0; }
+    .eyebrow { color:var(--accent); text-transform:uppercase; letter-spacing:.1em; font-weight:800; font-size:12px; }
+    .intro { max-width:900px; color:var(--muted); font-size:17px; }
+    .box { background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:16px; }
+    .controls { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:22px 0 14px; }
+    .buttons { display:flex; flex-wrap:wrap; gap:7px; }
+    button { padding:8px 11px; border:1px solid #a9b0ac; border-radius:7px; background:white; color:var(--ink); cursor:pointer; font:inherit; }
+    button:hover,button.active { color:var(--accent); border-color:var(--accent); background:var(--accent2); }
+    .state { display:grid; grid-template-columns:repeat(5,1fr); border:1px solid var(--line); background:var(--paper); border-radius:10px; overflow:hidden; }
+    .metric { padding:14px; border-right:1px solid var(--line); min-width:0; }
+    .metric:last-child { border-right:0; }.metric small { display:block; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+    .metric strong { display:block; margin-top:4px; font-size:17px; overflow-wrap:anywhere; }
+    .ok { color:var(--accent); }.bad { color:var(--bad); }
+    .now { margin-top:14px; display:grid; grid-template-columns:1.1fr 1fr 1fr; gap:12px; }
+    .frame { border-left:5px solid var(--accent); }
+    .frame big { font:700 22px ui-monospace,monospace; }
+    .strip { margin:14px 0; display:flex; gap:5px; overflow-x:auto; padding-bottom:4px; }
+    .tick { flex:1 0 115px; padding:9px; border:1px solid var(--line); border-radius:7px; background:var(--paper); font-size:12px; }
+    .tick.current { outline:3px solid var(--accent); }.tick.contact { background:#fff1c9; }
+    .tick code { display:block; margin-top:3px; }.changed { color:var(--accent); font-weight:800; }
+    .detail { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .detail ul { padding-left:20px; margin:8px 0 0; }.detail li { margin:5px 0; }
+    .walkthrough { margin-top:18px; }.tabs { display:flex; gap:6px; margin-bottom:-1px; }
+    .tab { border-radius:7px 7px 0 0; }.guide { border-radius:0 10px 10px 10px; }
+    .guide-steps { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin-top:12px; }.arrow { color:var(--muted); }
+    code { font-family:ui-monospace,SFMono-Regular,monospace; }
+    @media(max-width:800px){.controls,.detail,.now{grid-template-columns:1fr}.state{grid-template-columns:1fr 1fr}.metric{border-bottom:1px solid var(--line)} }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Throwaway logic prototype</div>
+  <h1>Do both swings keep their frames when contact becomes frame zero?</h1>
+  <p class="intro"><strong>Question:</strong> which normalized timeline, time base, and rendering schedule can place both contact timestamps on exactly the same output frame, retain every unique source frame whenever the output permits, and repeat only the source that has no new frame yet? This demo models the full 1.2-second-before/0.7-second-after window using exact rational timestamps.</p>
+
+  <section class="controls">
+    <div class="box"><h2>Source scenario</h2><div class="buttons" id="scenarioButtons"></div></div>
+    <div class="box"><h2>Rendering schedule</h2><div class="buttons" id="policyButtons"></div></div>
+  </section>
+
+  <section class="state" id="metrics"></section>
+  <section class="now">
+    <article class="box frame"><small>Output frame</small><br><big id="outputFrame"></big><p id="outputTime"></p></article>
+    <article class="box"><small>User video shows</small><h2 id="userFrame"></h2><p id="userState"></p></article>
+    <article class="box"><small>Pro video shows</small><h2 id="proFrame"></h2><p id="proState"></p></article>
+  </section>
+  <div class="buttons" style="margin-top:12px">
+    <button id="previous">← Previous output frame</button><button id="next">Next output frame →</button><button id="contact">Jump to contact</button><button id="reset">Reset</button>
+  </div>
+  <div class="strip" id="strip"></div>
+
+  <section class="detail">
+    <article class="box"><h2>What the scheduler did</h2><ul id="facts"></ul></article>
+    <article class="box"><h2>Frames that disappeared</h2><p id="dropped"></p></article>
+  </section>
+
+  <section class="walkthrough">
+    <div class="tabs" id="guideTabs"></div>
+    <article class="box guide"><h2 id="guideTitle"></h2><p id="guideText"></p><div class="guide-steps" id="guideSteps"></div></article>
+  </section>
+</main>
+
+<script>
+/* Portable pure module: exact rational normalization and three scheduling policies. */
+const Timeline = (() => {
+  const abs = n => n < 0n ? -n : n;
+  const gcd = (a,b) => { a=abs(a); b=abs(b); while(b){ [a,b]=[b,a%b]; } return a || 1n; };
+  const rat = (n,d=1n) => { n=BigInt(n); d=BigInt(d); if(d<0n){n=-n;d=-d;} const g=gcd(n,d); return {n:n/g,d:d/g}; };
+  const add = (a,b) => rat(a.n*b.d+b.n*a.d,a.d*b.d);
+  const sub = (a,b) => rat(a.n*b.d-b.n*a.d,a.d*b.d);
+  const mul = (a,b) => rat(a.n*b.n,a.d*b.d);
+  const div = (a,b) => rat(a.n*b.d,a.d*b.n);
+  const neg = a => rat(-a.n,a.d);
+  const cmp = (a,b) => a.n*b.d < b.n*a.d ? -1 : a.n*b.d > b.n*a.d ? 1 : 0;
+  const eq = (a,b) => cmp(a,b)===0;
+  const num = a => Number(a.n)/Number(a.d);
+  const key = a => `${a.n}/${a.d}`;
+  const lcm = (a,b) => abs(a/gcd(a,b)*b);
+  const fmt = (a,digits=6) => `${num(a).toFixed(digits).replace(/0+$/,'').replace(/\.$/,'')} s (${a.n}/${a.d})`;
+  const fpsText = a => `${num(a).toFixed(3).replace(/\.000$/,'')} fps`;
+
+  const PRE=rat(6n,5n), POST=rat(7n,10n), ONE=rat(1n), ZERO=rat(0n);
+  const SCENARIOS={
+    mixed:{name:'240 user / 120 pro',userFps:rat(240n),proFps:rat(30n),proSpeed:rat(1n,4n),slowmo:rat(1n,16n),note:'The pro file plays at 30 fps but quarter-speed normalization recovers 120 real-time frames per second. The user video is denser at 240.'},
+    equal:{name:'120 / quarter-speed 30',userFps:rat(120n),proFps:rat(30n),proSpeed:rat(1n,4n),slowmo:rat(1n,16n),note:'Both sources become 120 frames per normalized real-time second even though their presentation rates differ.'},
+    ntsc:{name:'59.94 user / 119.88 pro',userFps:rat(60000n,1001n),proFps:rat(30000n,1001n),proSpeed:rat(1n,4n),slowmo:rat(1n),note:'At real-time output, the normalized pro stream is 119.88 fps. A conventional fixed 60 fps schedule cannot retain it.'}
+  };
+  const POLICIES={
+    union:{name:'Source-event union (VFR)',note:'Emit an output frame whenever either normalized source advances. Hold the other side. This is the smallest lossless schedule and makes contact an explicit shared event.'},
+    adaptive:{name:'Contact-centered adaptive CFR',note:'Choose at least 60 fps and at least the densest post-slowmo source rate. Center the grid on contact and allow a partial-frame excess at the window edges.'},
+    fixed:{name:'Fixed 60 fps CFR',note:'Always emit 60 frames per output second, centered on contact. Familiar and compatible, but it can discard source frames when slow motion is reduced.'}
+  };
+
+  function source(role,fps,speed){
+    const interval=mul(div(ONE,fps),speed); // source PTS converted to normalized real time
+    const before=Math.ceil(num(PRE)/num(interval))+2, after=Math.ceil(num(POST)/num(interval))+2;
+    const contactIndex=role==='user'?1000:500;
+    const frames=[];
+    for(let k=-before;k<=after;k++) frames.push({id:`${role[0].toUpperCase()}${contactIndex+k}`,offset:mul(rat(k),interval),contact:k===0});
+    return {role,fps,speed,interval,frames,contactId:`${role[0].toUpperCase()}${contactIndex}`};
+  }
+  function active(frames,t){ let found=frames[0]; for(const f of frames){ if(cmp(f.offset,t)<=0) found=f; else break; } return found; }
+  function expectedFrames(source,start,end){
+    const first=active(source.frames,start); return [first,...source.frames.filter(f=>cmp(f.offset,start)>0&&cmp(f.offset,end)<=0)].filter((f,i,a)=>a.findIndex(x=>x.id===f.id)===i);
+  }
+  function exactTimeBase(events,slowmo){
+    const first=events[0]; let denominator=1n;
+    for(const event of events){ const pts=div(sub(event,first),slowmo); denominator=lcm(denominator,pts.d); }
+    return rat(1n,denominator);
+  }
+  function unionEvents(user,pro){
+    const events=[neg(PRE),ZERO];
+    for(const src of [user,pro]) for(const f of src.frames) if(cmp(f.offset,neg(PRE))>0&&cmp(f.offset,POST)<=0) events.push(f.offset);
+    const byKey=new Map(events.map(t=>[key(t),t])); return [...byKey.values()].sort(cmp);
+  }
+  function cfrEvents(rate,slowmo){
+    const normalizedStep=div(slowmo,rate);
+    const first=Math.floor(-num(PRE)/num(normalizedStep));
+    const last=Math.ceil(num(POST)/num(normalizedStep));
+    const events=[]; for(let k=first;k<=last;k++) events.push(mul(rat(k),normalizedStep));
+    return events;
+  }
+  function build(scenarioKey,policyKey){
+    const scenario=SCENARIOS[scenarioKey], user=source('user',scenario.userFps,ONE), pro=source('pro',scenario.proFps,scenario.proSpeed);
+    const userRate=div(ONE,user.interval), proRate=div(ONE,pro.interval);
+    const minimumOutputRate=mul(num(userRate)>num(proRate)?userRate:proRate,scenario.slowmo);
+    let rate=null, events;
+    if(policyKey==='union') events=unionEvents(user,pro);
+    else { rate=policyKey==='fixed'?rat(60n):rat(BigInt(Math.ceil(Math.max(60,num(minimumOutputRate))))); events=cfrEvents(rate,scenario.slowmo); }
+    const rows=events.map((offset,index)=>({index,offset,user:active(user.frames,offset),pro:active(pro.frames,offset)}));
+    const start=events[0], end=events[events.length-1];
+    const expected={user:expectedFrames(user,start,end),pro:expectedFrames(pro,start,end)};
+    const seen={user:new Set(rows.map(r=>r.user.id)),pro:new Set(rows.map(r=>r.pro.id))};
+    const dropped={user:expected.user.filter(f=>!seen.user.has(f.id)),pro:expected.pro.filter(f=>!seen.pro.has(f.id))};
+    const contactIndex=rows.findIndex(r=>eq(r.offset,ZERO));
+    const contactRow=rows[contactIndex];
+    const timeBase=exactTimeBase(events,scenario.slowmo);
+    for(const row of rows){ row.outputPts=div(sub(row.offset,start),scenario.slowmo); row.outputTick=div(row.outputPts,timeBase).n; }
+    const holds={user:0,pro:0}; for(let i=1;i<rows.length;i++){if(rows[i].user.id===rows[i-1].user.id)holds.user++;if(rows[i].pro.id===rows[i-1].pro.id)holds.pro++;}
+    return {scenarioKey,policyKey,scenario,policy:POLICIES[policyKey],user,pro,userRate,proRate,minimumOutputRate,rate,events,rows,expected,dropped,contactIndex,timeBase,holds,contactAligned:contactRow?.user.id===user.contactId&&contactRow?.pro.id===pro.contactId};
+  }
+  return {SCENARIOS,POLICIES,build,fmt,fpsText,num,eq};
+})();
+
+/* Thin throwaway page shell. */
+let scenarioKey='mixed', policyKey='union', cursor=0, model;
+const $=id=>document.getElementById(id);
+const GUIDES={
+  mixed:{title:'Two user frames for each pro movement',text:'Start with the requirement’s 240-versus-120 case. Under the union schedule, advance a few frames: the user changes every event while the pro is held on alternating events.',steps:[['scenario','mixed','Load mixed-density sources'],['policy','union','Use source-event union'],['contact',null,'Jump to contact'],['next',null,'Advance once'],['next',null,'Advance again']]},
+  speed:{title:'Normalize before applying shared slow motion',text:'The encoded pro file is 30 fps at quarter-speed. Normalization makes it 120 fps in real time; only then does the shared 0.0625 slow-motion factor stretch both sides together.',steps:[['scenario','equal','Load quarter-speed pro'],['policy','union','Use source-event union'],['contact',null,'Verify shared contact']]},
+  stress:{title:'Expose the fixed-60 failure',text:'At shared speed 1.0, the pro stream has 119.88 unique frames each normalized second. Fixed 60 fps necessarily loses some; switch to either lossless strategy to recover them.',steps:[['scenario','ntsc','Load real-time NTSC case'],['policy','fixed','Try fixed 60 fps'],['contact',null,'Check contact'],['policy','adaptive','Recover with adaptive CFR'],['policy','union','Compare source-event union']]}
+};
+let guideKey='mixed';
+function setScenario(k){scenarioKey=k;rebuild();} function setPolicy(k){policyKey=k;rebuild();}
+function rebuild(){model=Timeline.build(scenarioKey,policyKey);cursor=Math.min(Math.max(cursor,0),model.rows.length-1);render();}
+function changeMark(row,prev,role){return !prev||row[role].id!==prev[role].id?'<span class="changed">new</span>':'held';}
+function render(){
+  $('scenarioButtons').innerHTML=Object.entries(Timeline.SCENARIOS).map(([k,v])=>`<button class="${k===scenarioKey?'active':''}" onclick="setScenario('${k}')">${v.name}</button>`).join('');
+  $('policyButtons').innerHTML=Object.entries(Timeline.POLICIES).map(([k,v])=>`<button class="${k===policyKey?'active':''}" onclick="setPolicy('${k}')">${v.name}</button>`).join('');
+  const lost=model.dropped.user.length+model.dropped.pro.length;
+  $('metrics').innerHTML=`<div class="metric"><small>Normalized rates</small><strong>${Timeline.fpsText(model.userRate)} / ${Timeline.fpsText(model.proRate)}</strong></div><div class="metric"><small>Output schedule</small><strong>${model.rate?Timeline.fpsText(model.rate):'variable rate'}</strong></div><div class="metric"><small>Exact time base</small><strong>1/${model.timeBase.d} second</strong></div><div class="metric"><small>Contact frame</small><strong class="${model.contactAligned?'ok':'bad'}">${model.contactAligned?'Aligned exactly':'Not aligned'}</strong></div><div class="metric"><small>Unique frames lost</small><strong class="${lost?'bad':'ok'}">${lost}</strong></div>`;
+  const row=model.rows[cursor], prev=model.rows[cursor-1];
+  $('outputFrame').textContent=`${cursor} of ${model.rows.length-1}`;$('outputTime').textContent=`Normalized offset ${Timeline.fmt(row.offset,5)} · output PTS ${Timeline.fmt(row.outputPts,4)} · tick ${row.outputTick}`;
+  $('userFrame').textContent=row.user.id+(row.user.contact?' · CONTACT':'');$('proFrame').textContent=row.pro.id+(row.pro.contact?' · CONTACT':'');
+  $('userState').innerHTML=changeMark(row,prev,'user');$('proState').innerHTML=changeMark(row,prev,'pro');
+  $('strip').innerHTML=model.rows.slice(Math.max(0,cursor-4),Math.min(model.rows.length,cursor+5)).map(r=>{const p=model.rows[r.index-1];return `<div class="tick ${r.index===cursor?'current':''} ${Timeline.eq(r.offset,{n:0n,d:1n})?'contact':''}" onclick="cursor=${r.index};render()"><strong>Output ${r.index}</strong><code>U ${r.user.id} · ${p&&p.user.id===r.user.id?'held':'new'}</code><code>P ${r.pro.id} · ${p&&p.pro.id===r.pro.id?'held':'new'}</code></div>`}).join('');
+  const edge=model.policyKey==='union'?'Exact -1.2/+0.7 boundaries are explicit events.':'The contact-centered grid may retain less than one extra frame interval at either edge.';
+  $('facts').innerHTML=`<li>${model.scenario.note}</li><li>${model.policy.note}</li><li>${edge}</li><li>The user is held ${model.holds.user} times; the pro is held ${model.holds.pro} times. Holding repeats a frame; it never invents motion.</li>`;
+  const list=[...model.dropped.user.map(f=>`user ${f.id}`),...model.dropped.pro.map(f=>`pro ${f.id}`)];$('dropped').innerHTML=list.length?`<span class="bad">${list.slice(0,24).join(', ')}${list.length>24?` … and ${list.length-24} more`:''}</span>`:'<span class="ok">None. Every selected source frame appears in at least one output frame.</span>';
+  renderGuide();
+}
+function renderGuide(){const g=GUIDES[guideKey];$('guideTabs').innerHTML=Object.entries(GUIDES).map(([k,v])=>`<button class="tab ${k===guideKey?'active':''}" onclick="guideKey='${k}';renderGuide()">${v.title}</button>`).join('');$('guideTitle').textContent=g.title;$('guideText').textContent=g.text;$('guideSteps').innerHTML=g.steps.map(([action,value,label],i)=>`${i?'<span class="arrow">→</span>':''}<button onclick="guideAction('${action}','${value||''}')">${label}</button>`).join('');}
+function guideAction(action,value){if(action==='scenario')setScenario(value);else if(action==='policy')setPolicy(value);else if(action==='contact'){cursor=model.contactIndex;render();}else if(action==='next'){cursor=Math.min(cursor+1,model.rows.length-1);render();}}
+$('previous').onclick=()=>{cursor=Math.max(0,cursor-1);render();};$('next').onclick=()=>{cursor=Math.min(model.rows.length-1,cursor+1);render();};$('contact').onclick=()=>{cursor=model.contactIndex;render();};$('reset').onclick=()=>{cursor=0;render();};
+rebuild();
+</script>
+</body>
+</html>
