@@ -11,7 +11,6 @@ import logging
 import shutil
 import tempfile
 import time
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Sequence
@@ -19,45 +18,37 @@ from typing import List, Sequence
 import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-from utilities import PersonDetector, expand_box
-from PIL import Image
-
-import subprocess
-import torchaudio
+if __package__:
+    from .swing_detection import (
+        DEFAULT_AUDIO_MODEL,
+        DEFAULT_SHOT_MODEL,
+        DEFAULT_SHOT_TYPE_MODEL,
+        SAMPLE_RATE,
+        DetectionConfig,
+        detect_user_swings_for_legacy,
+        probe_video,
+    )
+    from .subprocess_utils import run_command as run_cmd
+else:
+    from swing_detection import (
+        DEFAULT_AUDIO_MODEL,
+        DEFAULT_SHOT_MODEL,
+        DEFAULT_SHOT_TYPE_MODEL,
+        SAMPLE_RATE,
+        DetectionConfig,
+        detect_user_swings_for_legacy,
+        probe_video,
+    )
+    from subprocess_utils import run_command as run_cmd
 
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-DEFAULT_STRIDE_S = 0.05
-SAMPLE_RATE = 48_000
-WINDOW_DURATION = 0.25
-PEAK_THRESHOLD = 0.5
-PEAK_MIN_SEPARATION = 2.0
-BATCH_SIZE = 128
-ATEMPO_HALF = 0.5
-PRE_CONTACT_BUFFER = 1.20
-POST_CONTACT_BUFFER = 0.70
-
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv"}
 
 
 _LOG = logging.getLogger(__name__)
-
-
-def run_cmd(cmd: Sequence[str]) -> None:
-    """Run a subprocess and raise with logged output on failure."""
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        joined = " ".join(cmd)
-        _LOG.error("Command failed (%s): %s", result.returncode, joined)
-        if result.stdout:
-            _LOG.error(result.stdout.strip())
-        if result.stderr:
-            _LOG.error(result.stderr.strip())
-        raise subprocess.CalledProcessError(
-            result.returncode, cmd, result.stdout, result.stderr
-        )
 
 
 def move_input_video_to_output(input_path: Path, output_dir: Path) -> None:
@@ -90,171 +81,6 @@ class Swing:
     label: str | None = None
 
 
-class PopDetector:
-    """Audio impact detector using the trained CNN."""
-
-    def __init__(
-        self,
-        model_path: Path,
-        stride_s: float = DEFAULT_STRIDE_S,
-        device: str | None = None,
-    ) -> None:
-        import torch
-        from fastai.learner import load_learner
-
-        self.stride_s = stride_s
-        if device is None:
-            if torch.backends.mps.is_available():
-                device = "mps"
-            elif torch.cuda.is_available():
-                device = "cuda"
-            else:
-                device = "cpu"
-        self.device = torch.device(device)
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                category=UserWarning,
-                message="load_learner` uses Python's insecure pickle",
-            )
-            learner = load_learner(model_path, cpu=self.device.type == "cpu")
-        learner.to(self.device)
-        learner.model.eval()
-        self.learner = learner
-
-    def find_impacts(self, wav_path: Path) -> List[float]:
-        import torch
-        import pandas as pd
-
-        waveform, sr = torchaudio.load(str(wav_path))
-        if sr != SAMPLE_RATE:
-            waveform = torchaudio.functional.resample(waveform, sr, SAMPLE_RATE)
-            sr = SAMPLE_RATE
-
-        window = int(sr * WINDOW_DURATION)
-        stride = int(sr * self.stride_s)
-        if waveform.shape[1] < window:
-            return []
-
-        starts = [
-            sample_start / sr
-            for sample_start in range(0, waveform.shape[1] - window + 1, stride)
-        ]
-        df = pd.DataFrame({"wav_path": str(wav_path), "start": starts})
-        dl = self.learner.dls.test_dl(df, bs=BATCH_SIZE)
-
-        with torch.no_grad():
-            preds, _ = self.learner.get_preds(dl=dl, reorder=False)
-            probs = preds[:, 1]
-
-        candidates: List[tuple[float, float]] = []
-        for i, p in enumerate(probs):
-            score = float(p)
-            if score > PEAK_THRESHOLD:
-                center = i * self.stride_s + (WINDOW_DURATION / 2)
-                candidates.append((center, score))
-
-        # Non-max suppression: only keep the highest-scoring peak in any
-        # two-second window so that all swings have equal duration.
-        candidates.sort(key=lambda c: c[1], reverse=True)
-        kept: List[tuple[float, float]] = []
-        for timestamp, score in candidates:
-            if all(
-                abs(timestamp - kept_timestamp) >= PEAK_MIN_SEPARATION
-                for kept_timestamp, _ in kept
-            ):
-                kept.append((timestamp, score))
-        kept.sort(key=lambda c: c[0])
-
-        peaks = [timestamp for timestamp, _ in kept]
-        _LOG.info("Detected %d audio peaks", len(peaks))
-        _LOG.info("Detected peaks: " + ", ".join(f"{p:.3f}" for p in peaks))
-        return peaks
-
-
-class ShotDetector:
-    """Binary image shot detector from a fastai model."""
-
-    def __init__(self, model_path: Path, device: str | None = None) -> None:
-        import torch
-        from fastai.learner import load_learner
-
-        if device is None:
-            if torch.backends.mps.is_available():
-                device = "mps"
-            elif torch.cuda.is_available():
-                device = "cuda"
-            else:
-                device = "cpu"
-        self.device = torch.device(device)
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                category=UserWarning,
-                message="load_learner` uses Python's insecure pickle",
-            )
-            learner = load_learner(model_path, cpu=self.device.type == "cpu")
-        learner.to(self.device)
-        learner.model.eval()
-        self.learner = learner
-
-    def predict_label(self, img) -> str:
-        pred, _, _ = self.learner.predict(img)
-        return str(pred)
-
-    def is_shot(self, img) -> bool:
-        return self.predict_label(img) == "shot"
-
-
-class ShotTypeClassifier:
-    """Shot-type classifier that runs after binary shot detection."""
-
-    def __init__(self, model_path: Path, device: str | None = None) -> None:
-        import torch
-        from fastai.learner import load_learner
-
-        if device is None:
-            if torch.backends.mps.is_available():
-                device = "mps"
-            elif torch.cuda.is_available():
-                device = "cuda"
-            else:
-                device = "cpu"
-        self.device = torch.device(device)
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                category=UserWarning,
-                message="load_learner` uses Python's insecure pickle",
-            )
-            learner = load_learner(model_path, cpu=self.device.type == "cpu")
-        learner.to(self.device)
-        learner.model.eval()
-        self.learner = learner
-
-    def predict_label(self, img) -> str:
-        pred, _, _ = self.learner.predict(img)
-        return str(pred)
-
-
-def extract_frame(video: Path, time: float, out_path: Path) -> None:
-    """Extract a single frame from *video* at *time* seconds."""
-
-    run_cmd(
-        [
-            "ffmpeg",
-            "-ss",
-            str(time),
-            "-i",
-            str(video),
-            "-frames:v",
-            "1",
-            str(out_path),
-            "-y",
-        ]
-    )
-
-
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Extract tennis swings from video")
     p.add_argument("input", help="Input video file")
@@ -264,17 +90,17 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument(
         "--audio_model",
         help="Path to trained audio model",
-        default="models/audio_pop_logmel_large_20260512231349.pth",
+        default=str(DEFAULT_AUDIO_MODEL),
     )
     p.add_argument(
         "--shot-model",
         help="Path to trained binary shot detector",
-        default="models/shot_binary_classifier_20260328143535.pkl",
+        default=str(DEFAULT_SHOT_MODEL),
     )
     p.add_argument(
         "--shot-type-model",
         help="Path to trained shot-type classifier",
-        default="models/shot_type_classifier_20260328220857.pkl",
+        default=str(DEFAULT_SHOT_TYPE_MODEL),
     )
     p.add_argument("--clips", action="store_true", help="Export each swing separately")
     p.add_argument(
@@ -325,51 +151,7 @@ def check_ffmpeg() -> None:
         sys.exit(1)
 
 
-def probe(video: Path) -> dict:
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_streams",
-                "-of",
-                "json",
-                str(video),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as e:
-        print(e.stderr, file=sys.stderr)
-        raise
-    meta = json.loads(result.stdout)
-    v_stream = next(s for s in meta["streams"] if s["codec_type"] == "video")
-    a_stream = next(s for s in meta["streams"] if s["codec_type"] == "audio")
-    fps_parts = v_stream["r_frame_rate"].split("/")
-    fps = float(fps_parts[0]) / float(fps_parts[1])
-    return {
-        "fps": fps,
-        "resolution": (v_stream["width"], v_stream["height"]),
-        "audio_codec": a_stream.get("codec_name"),
-    }
-
-
-def extract_audio(video: Path, wav_path: Path) -> None:
-    run_cmd(
-        [
-            "ffmpeg",
-            "-i",
-            str(video),
-            "-ac",
-            "1",
-            "-ar",
-            "48000",
-            str(wav_path),
-            "-y",
-        ]
-    )
+probe = probe_video
 
 
 def cut_swing(
@@ -462,64 +244,28 @@ def process_video(input_path: Path, args: argparse.Namespace) -> int:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
-        wav_path = tmpdir_path / "audio.wav"
-        extract_audio(input_path, wav_path)
-        detector = PopDetector(Path(args.audio_model), device=args.device)
-        impact_times = detector.find_impacts(wav_path)
-        person_detector = PersonDetector(args.device)
-        shot_detector = None
-        shot_type_classifier = None
-        if args.shot_model:
-            shot_detector = ShotDetector(Path(args.shot_model), device=args.device)
-        if args.shot_type_model:
-            shot_type_classifier = ShotTypeClassifier(
-                Path(args.shot_type_model), device=args.device
+        detection_config = DetectionConfig(
+            audio_model=Path(args.audio_model),
+            shot_model=Path(args.shot_model) if args.shot_model else None,
+            shot_type_model=(
+                Path(args.shot_type_model) if args.shot_type_model else None
+            ),
+            device=args.device,
+        )
+        detections = detect_user_swings_for_legacy(
+            input_path, detection_config, meta
+        )
+        swings = [
+            Swing(
+                index=details.swing.ordinal,
+                start=details.start,
+                end=details.end,
+                contact=details.legacy_contact,
+                crop=details.crop,
+                label=details.swing.shot_type,
             )
-
-        swings: List[Swing] = []
-        peak_processing_times: List[float] = []
-        for i, t in enumerate(impact_times):
-            peak_started_at = time.perf_counter()
-            start = t - PRE_CONTACT_BUFFER
-            end = t + POST_CONTACT_BUFFER
-            frame_path = tmpdir_path / f"impact_{i}.jpg"
-            extract_frame(input_path, t, frame_path)
-            box = person_detector.find_box(frame_path)
-            if box is None:
-                _LOG.info("No person found for impact %d", i)
-                continue
-            crop = expand_box(box, meta["resolution"])
-            label = None
-            if shot_detector is not None:
-                with Image.open(frame_path) as img:
-                    cropped = img.crop(
-                        (crop[0], crop[1], crop[0] + crop[2], crop[1] + crop[3])
-                    )
-                    if not shot_detector.is_shot(cropped):
-                        _LOG.info("Impact %d not a swing", i)
-                        continue
-                    if shot_type_classifier is not None:
-                        label = shot_type_classifier.predict_label(cropped)
-            swings.append(
-                Swing(
-                    index=len(swings),
-                    start=start,
-                    end=end,
-                    contact=t,
-                    crop=crop,
-                    label=label,
-                )
-            )
-            peak_elapsed = time.perf_counter() - peak_started_at
-            peak_processing_times.append(peak_elapsed)
-            print(f"Peak {i} at {t:.3f}s processed in {peak_elapsed:.3f}s")
-
-        if peak_processing_times:
-            avg_peak_time = sum(peak_processing_times) / len(peak_processing_times)
-            print(
-                f"Average processing time per peak: {avg_peak_time:.3f}s "
-                f"({len(peak_processing_times)} peaks)"
-            )
+            for details in detections
+        ]
 
         if not swings:
             _LOG.warning("No swings detected")
