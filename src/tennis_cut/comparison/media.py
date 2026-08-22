@@ -143,6 +143,15 @@ class PlayerLocator(Protocol):
     def find_box(self, image: Path, /) -> tuple[int, int, int, int] | None: ...
 
 
+class FfmpegFrameImageReader:
+    """Decode one exact source frame for the pro picker."""
+
+    def read_frame(self, source: Path, frame: DecodedFrame) -> bytes:
+        with tempfile.TemporaryDirectory() as directory:
+            decoded = _decode_frames(source, (frame.ordinal,), Path(directory))
+            return decoded[frame.ordinal].read_bytes()
+
+
 def _decode_frames(
     source: Path,
     ordinals: tuple[int, ...],

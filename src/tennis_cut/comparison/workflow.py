@@ -32,8 +32,6 @@ from .planning import (
 from .pro_selection import (
     FileSidecarStore,
     InspectedMedia,
-    PickerSelection,
-    PickerSession,
     ProSelection,
     SelectionCancelled,
     SelectionProcessingFailure,
@@ -135,13 +133,6 @@ class ComparisonDependencies(Protocol):
     ) -> None: ...
 
 
-class _SidecarOnlyPicker:
-    """Issue 56's noninteractive adapter; absent sidecars cancel safely."""
-
-    def pick(self, session: PickerSession) -> PickerSelection | None:
-        return None
-
-
 class SystemComparisonDependencies:
     """Production effects for the command-line comparison adapter."""
 
@@ -164,6 +155,8 @@ class SystemComparisonDependencies:
         pro_speed: Fraction,
         inspected_media: InspectedMedia,
     ) -> ProSelection | SelectionCancelled | SelectionProcessingFailure:
+        from .media import FfmpegFrameImageReader
+        from .pro_picker import QtProPicker
         from .pro_selection import resolve_pro_selection
 
         return resolve_pro_selection(
@@ -171,7 +164,7 @@ class SystemComparisonDependencies:
             pro_speed=pro_speed,
             inspected_media=inspected_media,
             sidecar_store=FileSidecarStore(),
-            picker=_SidecarOnlyPicker(),
+            picker=QtProPicker(pro_video, FfmpegFrameImageReader()),
         )
 
     def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:

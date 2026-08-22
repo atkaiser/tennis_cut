@@ -21,6 +21,7 @@ from tennis_cut.comparison.pro_selection import (
     DecodedFrame,
     FileSidecarStore,
     InspectedMedia,
+    PickerSelection,
     PickerSession,
     ProSelection,
     SelectionCancelled,
@@ -36,6 +37,15 @@ class NoPicker:
         raise AssertionError("a valid saved selection must remain noninteractive")
 
 
+class ConfirmingPicker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def pick(self, session: PickerSession) -> PickerSelection:
+        self.calls += 1
+        return PickerSelection(15, "forehand")
+
+
 class ValidSidecarDependencies:
     def __init__(self, user_video: Path, pro_video: Path) -> None:
         frames = tuple(
@@ -47,6 +57,7 @@ class ValidSidecarDependencies:
             user_video: ComparisonSource(user_video, 1920, 1080, media),
             pro_video: ComparisonSource(pro_video, 1920, 1080, media),
         }
+        self.selection_resolutions = 0
 
     def executable_exists(self, name: str) -> bool:
         return True
@@ -63,6 +74,7 @@ class ValidSidecarDependencies:
         pro_speed: Fraction,
         inspected_media: InspectedMedia,
     ) -> ProSelection | SelectionCancelled | SelectionProcessingFailure:
+        self.selection_resolutions += 1
         return resolve_pro_selection(
             pro_video=pro_video,
             pro_speed=pro_speed,
@@ -100,6 +112,50 @@ class FailedEncoderDependencies(ValidSidecarDependencies):
         clips: tuple[Path, ...],
     ) -> None:
         raise MediaCommandFailed("ffmpeg", 1, "raw encoder details")
+
+
+class NewSelectionDependencies(ValidSidecarDependencies):
+    def __init__(self, user_video: Path, pro_video: Path) -> None:
+        super().__init__(user_video, pro_video)
+        self.picker = ConfirmingPicker()
+
+    def resolve_selection(
+        self,
+        pro_video: Path,
+        pro_speed: Fraction,
+        inspected_media: InspectedMedia,
+    ) -> ProSelection | SelectionCancelled | SelectionProcessingFailure:
+        self.selection_resolutions += 1
+        return resolve_pro_selection(
+            pro_video=pro_video,
+            pro_speed=pro_speed,
+            inspected_media=inspected_media,
+            sidecar_store=FileSidecarStore(),
+            picker=self.picker,
+        )
+
+
+class StoppedSelectionDependencies(ValidSidecarDependencies):
+    def __init__(
+        self,
+        user_video: Path,
+        pro_video: Path,
+        result: SelectionCancelled | SelectionProcessingFailure,
+    ) -> None:
+        super().__init__(user_video, pro_video)
+        self.result = result
+
+    def resolve_selection(
+        self,
+        pro_video: Path,
+        pro_speed: Fraction,
+        inspected_media: InspectedMedia,
+    ) -> SelectionCancelled | SelectionProcessingFailure:
+        self.selection_resolutions += 1
+        return self.result
+
+    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
+        raise AssertionError("models must remain lazy when selection does not complete")
 
 
 class ComparisonCliTests(unittest.TestCase):
@@ -167,6 +223,7 @@ class ComparisonCliTests(unittest.TestCase):
                 patch("sys.stdout", new_callable=io.StringIO) as stdout,
                 patch("sys.stderr", new_callable=io.StringIO) as stderr,
             ):
+                dependencies = ValidSidecarDependencies(missing_user, pro_video)
                 status = main(
                     [
                         str(missing_user),
@@ -174,7 +231,7 @@ class ComparisonCliTests(unittest.TestCase):
                         "--pro-speed",
                         "1",
                     ],
-                    dependencies=ValidSidecarDependencies(missing_user, pro_video),
+                    dependencies=dependencies,
                 )
 
         self.assertEqual(status, 2)
@@ -183,6 +240,104 @@ class ComparisonCliTests(unittest.TestCase):
             stderr.getvalue(),
             f"tennis-compare: missing user video: {missing_user}\n",
         )
+        self.assertEqual(dependencies.selection_resolutions, 0)
+
+    def test_selection_stop_precedes_models_and_writes_no_comparison_output(
+        self,
+    ) -> None:
+        cases = (
+            (SelectionCancelled(), "pro selection cancelled"),
+            (
+                SelectionProcessingFailure(
+                    "persist pro selection", "disk is read-only"
+                ),
+                "persist pro selection failed: disk is read-only",
+            ),
+        )
+        for selection_result, message in cases:
+            with (
+                self.subTest(message=message),
+                tempfile.TemporaryDirectory() as directory_name,
+            ):
+                directory = Path(directory_name)
+                user_video = directory / "user.mov"
+                pro_video = directory / "pro.mov"
+                user_video.touch()
+                pro_video.touch()
+                models = tuple(directory / name for name in ("audio", "shot", "type"))
+                for model in models:
+                    model.touch()
+                output_directory = directory / "output"
+                dependencies = StoppedSelectionDependencies(
+                    user_video, pro_video, selection_result
+                )
+                with (
+                    patch("sys.stdout", new_callable=io.StringIO) as stdout,
+                    patch("sys.stderr", new_callable=io.StringIO) as stderr,
+                ):
+                    status = main(
+                        [
+                            str(user_video),
+                            str(pro_video),
+                            "--pro-speed",
+                            "1",
+                            "--output-dir",
+                            str(output_directory),
+                            "--audio-model",
+                            str(models[0]),
+                            "--shot-model",
+                            str(models[1]),
+                            "--shot-type-model",
+                            str(models[2]),
+                        ],
+                        dependencies=dependencies,
+                    )
+
+                self.assertEqual(status, 1)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(stderr.getvalue(), f"tennis-compare: {message}\n")
+                self.assertFalse(output_directory.exists())
+
+    def test_new_confirmation_continues_and_future_run_bypasses_picker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video = directory / "user.mov"
+            pro_video = directory / "pro.mov"
+            user_video.write_bytes(b"user")
+            pro_video.write_bytes(b"pro")
+            models = tuple(directory / name for name in ("audio", "shot", "type"))
+            for model in models:
+                model.touch()
+            common_argv = [
+                str(user_video),
+                str(pro_video),
+                "--pro-speed",
+                "1",
+                "--audio-model",
+                str(models[0]),
+                "--shot-model",
+                str(models[1]),
+                "--shot-type-model",
+                str(models[2]),
+            ]
+            first_dependencies = NewSelectionDependencies(user_video, pro_video)
+
+            with patch("sys.stdout", new_callable=io.StringIO):
+                first_status = main(
+                    [*common_argv, "--output-dir", str(directory / "first")],
+                    dependencies=first_dependencies,
+                )
+            with patch("sys.stdout", new_callable=io.StringIO):
+                second_status = main(
+                    [*common_argv, "--output-dir", str(directory / "second")],
+                    dependencies=ValidSidecarDependencies(user_video, pro_video),
+                )
+
+            self.assertEqual((first_status, second_status), (0, 0))
+            self.assertEqual(first_dependencies.picker.calls, 1)
+            self.assertTrue(
+                pro_video.with_name("pro.mov.tennis-compare.json").is_file()
+            )
 
     def test_valid_saved_selection_runs_complete_noninteractive_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
