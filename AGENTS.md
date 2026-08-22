@@ -33,3 +33,17 @@ See `Directory overview` in main README.md
 ## Security & Configuration Tips
 - Avoid committing videos, wavs, or model checkpoints.
 - Use `pathlib.Path` for cross‑platform paths; document new tooling in `README.md`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues for `atkaiser/tennis_cut`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses the five default canonical labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repository uses a single-context domain-doc layout. See `docs/agents/domain.md`.
