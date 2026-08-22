@@ -135,6 +135,18 @@ class NewSelectionDependencies(ValidSidecarDependencies):
         )
 
 
+class FailingNewSelectionDependencies(NewSelectionDependencies):
+    def render_artifacts(
+        self,
+        plans: tuple[ComparisonRenderPlan, ...],
+        primary: Path,
+        clips: tuple[Path, ...],
+    ) -> None:
+        primary.parent.mkdir(parents=True, exist_ok=True)
+        primary.write_bytes(b"partial")
+        raise OSError("encoder stopped")
+
+
 class StoppedSelectionDependencies(ValidSidecarDependencies):
     def __init__(
         self,
@@ -156,6 +168,11 @@ class StoppedSelectionDependencies(ValidSidecarDependencies):
 
     def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
         raise AssertionError("models must remain lazy when selection does not complete")
+
+
+class MissingAudioDependencies(ValidSidecarDependencies):
+    def user_has_audio(self, path: Path) -> bool:
+        return False
 
 
 class ComparisonCliTests(unittest.TestCase):
@@ -242,6 +259,111 @@ class ComparisonCliTests(unittest.TestCase):
         )
         self.assertEqual(dependencies.selection_resolutions, 0)
 
+    def test_semantic_preflight_errors_have_stable_status_and_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video = directory / "user.mov"
+            pro_video = directory / "pro.mov"
+            user_video.write_bytes(b"user")
+            pro_video.write_bytes(b"pro")
+            models = tuple(directory / name for name in ("audio", "shot", "type"))
+            for model in models:
+                model.touch()
+            base_argv = [
+                str(user_video),
+                str(pro_video),
+                "--pro-speed",
+                "1",
+                "--audio-model",
+                str(models[0]),
+                "--shot-model",
+                str(models[1]),
+                "--shot-type-model",
+                str(models[2]),
+            ]
+            cases = (
+                (
+                    [*base_argv[:3], "0", *base_argv[4:]],
+                    ValidSidecarDependencies(user_video, pro_video),
+                    "pro speed must be greater than zero",
+                ),
+                (
+                    [*base_argv, "--slowmo", "2"],
+                    ValidSidecarDependencies(user_video, pro_video),
+                    "slow motion must be in (0, 1]",
+                ),
+                (
+                    base_argv,
+                    MissingAudioDependencies(user_video, pro_video),
+                    f"user video has no audio: {user_video}",
+                ),
+            )
+            for argv, dependencies, message in cases:
+                with (
+                    self.subTest(message=message),
+                    patch("sys.stdout", new_callable=io.StringIO) as stdout,
+                    patch("sys.stderr", new_callable=io.StringIO) as stderr,
+                ):
+                    status = main(argv, dependencies=dependencies)
+
+                self.assertEqual(status, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(stderr.getvalue(), f"tennis-compare: {message}\n")
+                self.assertEqual(dependencies.selection_resolutions, 0)
+                self.assertEqual(user_video.read_bytes(), b"user")
+                self.assertEqual(pro_video.read_bytes(), b"pro")
+
+    def test_all_output_collisions_are_reported_before_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video = directory / "user.mov"
+            pro_video = directory / "pro.mov"
+            user_video.write_bytes(b"user")
+            pro_video.write_bytes(b"pro")
+            models = tuple(directory / name for name in ("audio", "shot", "type"))
+            for model in models:
+                model.touch()
+            output_directory = directory / "output"
+            output_directory.mkdir()
+            primary = output_directory / "user_vs_pro_slow0.0625x.mp4"
+            clips_directory = output_directory / "user_vs_pro_slow0.0625x_clips"
+            primary.touch()
+            clips_directory.mkdir()
+            dependencies = ValidSidecarDependencies(user_video, pro_video)
+
+            with (
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            ):
+                status = main(
+                    [
+                        str(user_video),
+                        str(pro_video),
+                        "--pro-speed",
+                        "1",
+                        "--clips",
+                        "--output-dir",
+                        str(output_directory),
+                        "--audio-model",
+                        str(models[0]),
+                        "--shot-model",
+                        str(models[1]),
+                        "--shot-type-model",
+                        str(models[2]),
+                    ],
+                    dependencies=dependencies,
+                )
+
+            self.assertEqual(status, 2)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(
+                stderr.getvalue(),
+                f"tennis-compare: output already exists: {primary}, {clips_directory}\n",
+            )
+            self.assertEqual(dependencies.selection_resolutions, 0)
+            self.assertEqual(user_video.read_bytes(), b"user")
+            self.assertEqual(pro_video.read_bytes(), b"pro")
+
     def test_selection_stop_precedes_models_and_writes_no_comparison_output(
         self,
     ) -> None:
@@ -327,17 +449,71 @@ class ComparisonCliTests(unittest.TestCase):
                     [*common_argv, "--output-dir", str(directory / "first")],
                     dependencies=first_dependencies,
                 )
-            with patch("sys.stdout", new_callable=io.StringIO):
+            with patch("sys.stdout", new_callable=io.StringIO) as quiet_stdout:
                 second_status = main(
-                    [*common_argv, "--output-dir", str(directory / "second")],
+                    [
+                        *common_argv,
+                        "--output-dir",
+                        str(directory / "second"),
+                        "--quiet",
+                    ],
                     dependencies=ValidSidecarDependencies(user_video, pro_video),
                 )
 
             self.assertEqual((first_status, second_status), (0, 0))
             self.assertEqual(first_dependencies.picker.calls, 1)
+            self.assertEqual(quiet_stdout.getvalue(), "")
             self.assertTrue(
                 pro_video.with_name("pro.mov.tennis-compare.json").is_file()
             )
+
+    def test_new_sidecar_survives_later_failure_without_comparison_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video = directory / "user.mov"
+            pro_video = directory / "pro.mov"
+            user_video.write_bytes(b"user")
+            pro_video.write_bytes(b"pro")
+            models = tuple(directory / name for name in ("audio", "shot", "type"))
+            for model in models:
+                model.touch()
+            output_directory = directory / "output"
+            dependencies = FailingNewSelectionDependencies(user_video, pro_video)
+
+            with (
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            ):
+                status = main(
+                    [
+                        str(user_video),
+                        str(pro_video),
+                        "--pro-speed",
+                        "1",
+                        "--output-dir",
+                        str(output_directory),
+                        "--audio-model",
+                        str(models[0]),
+                        "--shot-model",
+                        str(models[1]),
+                        "--shot-type-model",
+                        str(models[2]),
+                    ],
+                    dependencies=dependencies,
+                )
+
+            self.assertEqual(status, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(
+                stderr.getvalue(),
+                "tennis-compare: comparison rendering failed: encoder stopped\n",
+            )
+            self.assertTrue(
+                pro_video.with_name("pro.mov.tennis-compare.json").is_file()
+            )
+            self.assertFalse(output_directory.exists())
+            self.assertEqual(user_video.read_bytes(), b"user")
+            self.assertEqual(pro_video.read_bytes(), b"pro")
 
     def test_valid_saved_selection_runs_complete_noninteractive_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:

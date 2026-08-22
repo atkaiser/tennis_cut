@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from fractions import Fraction
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
+import tennis_cut.comparison.workflow as comparison_workflow
 from tennis_cut.comparison import ComparisonRequest, ComparisonResult, compare_videos
 from tennis_cut.comparison.planning import (
     ComparisonRenderPlan,
@@ -25,6 +28,7 @@ from tennis_cut.comparison.workflow import (
     ComparisonSelectionCancelled,
     InvalidComparisonRequest,
     OutputCollision,
+    SystemComparisonDependencies,
 )
 from tennis_cut.swing_detection import DetectedSwing
 
@@ -174,7 +178,58 @@ class FailedDetectionDependencies(ZeroComparisonDependencies):
         raise OSError("model could not load")
 
 
+class FailedInspectionDependencies(ZeroComparisonDependencies):
+    def inspect_source(self, path: Path) -> ComparisonSource:
+        raise OSError("probe failed")
+
+
+class FailedAudioInspectionDependencies(ZeroComparisonDependencies):
+    def user_has_audio(self, path: Path) -> bool:
+        raise OSError("audio probe failed")
+
+
+class MissingAudioDependencies(ZeroComparisonDependencies):
+    def user_has_audio(self, path: Path) -> bool:
+        return False
+
+
+class FailedLocatorDependencies(MatchingDependencies):
+    def create_player_locator(self, device: str | None) -> object:
+        raise OSError("locator failed")
+
+
+class FailedUserObservationDependencies(MatchingDependencies):
+    def observe_players(
+        self, window: SelectedSourceWindow, locator: object
+    ) -> tuple[PlayerObservation, ...]:
+        if window.swing_ordinal is not None:
+            raise OSError("user observation failed")
+        return super().observe_players(window, locator)
+
+
 class CompareVideosTests(unittest.TestCase):
+    def test_automatic_device_selection_prefers_mps_then_cuda_then_cpu(self) -> None:
+        cases = (
+            (None, True, True, "mps"),
+            (None, False, True, "cuda"),
+            (None, False, False, "cpu"),
+            ("cpu", True, True, "cpu"),
+        )
+        for requested, mps_available, cuda_available, expected in cases:
+            with (
+                self.subTest(requested=requested, expected=expected),
+                patch(
+                    "torch.backends.mps.is_available", return_value=mps_available
+                ),
+                patch("torch.cuda.is_available", return_value=cuda_available),
+                patch("utilities.PersonDetector", side_effect=lambda device: device),
+            ):
+                selected = SystemComparisonDependencies().create_player_locator(
+                    requested
+                )
+
+            self.assertEqual(selected, expected)
+
     def test_preflight_rejects_two_paths_to_the_same_source_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -337,6 +392,8 @@ class CompareVideosTests(unittest.TestCase):
                 compare_videos(request, dependencies)
 
             self.assertNotIn("detect", dependencies.events)
+            self.assertEqual(user_video.read_bytes(), b"user source")
+            self.assertEqual(pro_video.read_bytes(), b"pro source")
 
     def test_preflight_reports_primary_and_clip_directory_collisions(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
@@ -360,11 +417,130 @@ class CompareVideosTests(unittest.TestCase):
             )
 
             with self.assertRaises(OutputCollision) as raised:
-                compare_videos(
-                    request, ZeroComparisonDependencies(user_video, pro_video)
-                )
+                dependencies = ZeroComparisonDependencies(user_video, pro_video)
+                compare_videos(request, dependencies)
 
             self.assertEqual(raised.exception.paths, (primary, clips_directory))
+            self.assertEqual(dependencies.events, [])
+            self.assertEqual(user_video.read_bytes(), b"user source")
+            self.assertEqual(pro_video.read_bytes(), b"pro source")
+
+    def test_input_effect_failures_are_invalid_before_selection(self) -> None:
+        cases = (
+            (
+                FailedInspectionDependencies,
+                "invalid video input: probe failed",
+            ),
+            (
+                FailedAudioInspectionDependencies,
+                "cannot inspect user audio: audio probe failed",
+            ),
+            (MissingAudioDependencies, "user video has no audio"),
+        )
+        for dependency_type, message in cases:
+            with (
+                self.subTest(message=message),
+                tempfile.TemporaryDirectory() as directory_name,
+            ):
+                directory = Path(directory_name)
+                user_video, pro_video, models = comparison_files(directory)
+                request = ComparisonRequest(
+                    user_video=user_video,
+                    pro_video=pro_video,
+                    pro_speed=Fraction(1),
+                    audio_model=models[0],
+                    shot_model=models[1],
+                    shot_type_model=models[2],
+                )
+                dependencies = dependency_type(user_video, pro_video)
+
+                with self.assertRaisesRegex(InvalidComparisonRequest, message):
+                    compare_videos(request, dependencies)
+
+                self.assertNotIn("select", dependencies.events)
+                self.assertNotIn("detect", dependencies.events)
+                self.assertEqual(user_video.read_bytes(), b"user source")
+                self.assertEqual(pro_video.read_bytes(), b"pro source")
+
+    def test_preparation_effect_failures_are_typed_and_leave_no_output(self) -> None:
+        cases = (
+            (FailedLocatorDependencies, "prepare pro window.*locator failed"),
+            (
+                FailedUserObservationDependencies,
+                "prepare user swing 4.*user observation failed",
+            ),
+        )
+        for dependency_type, message in cases:
+            with (
+                self.subTest(message=message),
+                tempfile.TemporaryDirectory() as directory_name,
+            ):
+                directory = Path(directory_name)
+                user_video, pro_video, models = comparison_files(directory)
+                output_directory = directory / "outputs"
+                request = ComparisonRequest(
+                    user_video=user_video,
+                    pro_video=pro_video,
+                    pro_speed=Fraction(1),
+                    output_directory=output_directory,
+                    audio_model=models[0],
+                    shot_model=models[1],
+                    shot_type_model=models[2],
+                )
+
+                with self.assertRaisesRegex(ComparisonProcessingFailed, message):
+                    compare_videos(
+                        request, dependency_type(user_video, pro_video)
+                    )
+
+                self.assertFalse(output_directory.exists())
+                self.assertEqual(user_video.read_bytes(), b"user source")
+                self.assertEqual(pro_video.read_bytes(), b"pro source")
+
+    def test_publication_failure_rolls_back_clips_primary_and_output_directory(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video, pro_video, models = comparison_files(directory)
+            output_directory = directory / "outputs"
+            request = ComparisonRequest(
+                user_video=user_video,
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                output_directory=output_directory,
+                clips=True,
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
+            )
+            primary = output_directory / "user_vs_pro_slow0.0625x.mp4"
+            replace = os.replace
+
+            def fail_primary_publication(source: Path, destination: Path) -> None:
+                if Path(destination) == primary:
+                    raise OSError("publication stopped")
+                replace(source, destination)
+
+            with (
+                patch.object(
+                    comparison_workflow.os,
+                    "replace",
+                    side_effect=fail_primary_publication,
+                ),
+                self.assertRaisesRegex(
+                    ComparisonProcessingFailed,
+                    "artifact publication.*publication stopped",
+                ),
+            ):
+                compare_videos(
+                    request, MatchingDependencies(user_video, pro_video)
+                )
+
+            self.assertFalse(output_directory.exists())
+            self.assertEqual(tuple(directory.glob(".tennis-compare-*")), ())
+            self.assertEqual(user_video.read_bytes(), b"user source")
+            self.assertEqual(pro_video.read_bytes(), b"pro source")
 
     def test_selection_and_detection_failures_are_typed_by_stage(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:

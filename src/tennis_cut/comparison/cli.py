@@ -109,7 +109,7 @@ def main(
         print(f"tennis-compare: processing failed: {error}", file=sys.stderr)
         return 1
 
-    if result.published_paths:
+    if result.published_paths and not args.quiet:
         print(result.published_paths[0])
     return 0
 
