@@ -12,7 +12,14 @@ from tennis_cut.comparison.pro_selection import DecodedFrame, InspectedMedia
 class InspectMediaTests(unittest.TestCase):
     def test_exposes_ordered_frames_with_exact_stream_pts_and_time_base(self) -> None:
         ffprobe_output = {
-            "streams": [{"index": 2, "time_base": "1/90000"}],
+            "streams": [
+                {
+                    "index": 2,
+                    "time_base": "1/90000",
+                    "width": 1920,
+                    "height": 1080,
+                }
+            ],
             "frames": [
                 {"stream_index": 2, "pts": 9000},
                 {"stream_index": 2, "pts": 12753},

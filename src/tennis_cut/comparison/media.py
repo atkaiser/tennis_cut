@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from fractions import Fraction
 import json
 from pathlib import Path
@@ -21,7 +22,14 @@ from .planning import (
 from .pro_selection import DecodedFrame, InspectedMedia
 
 
-def _inspect_video(video: Path) -> tuple[dict, InspectedMedia]:
+@dataclass(frozen=True)
+class _InspectedVideo:
+    width: int
+    height: int
+    media: InspectedMedia
+
+
+def _inspect_video(video: Path) -> _InspectedVideo:
     completed = subprocess.run(
         [
             "ffprobe",
@@ -61,25 +69,28 @@ def _inspect_video(video: Path) -> tuple[dict, InspectedMedia]:
         raise ValueError("selected video stream has no decoded frames")
     if any(frame.stream_index != stream_index for frame in frames):
         raise ValueError("decoded frame belongs to an unexpected stream")
-    return stream, InspectedMedia(frames)
+    return _InspectedVideo(
+        width=int(stream["width"]),
+        height=int(stream["height"]),
+        media=InspectedMedia(frames),
+    )
 
 
 def inspect_media(video: Path) -> InspectedMedia:
     """Inspect ordered decoded video frames without FPS-based reconstruction."""
 
-    _, inspected_media = _inspect_video(video)
-    return inspected_media
+    return _inspect_video(video).media
 
 
 def inspect_comparison_source(video: Path) -> ComparisonSource:
     """Inspect exact frames and source geometry for comparison planning."""
 
-    stream, inspected_media = _inspect_video(video)
+    inspected = _inspect_video(video)
     return ComparisonSource(
         path=video,
-        width=int(stream["width"]),
-        height=int(stream["height"]),
-        inspected_media=inspected_media,
+        width=inspected.width,
+        height=inspected.height,
+        inspected_media=inspected.media,
     )
 
 
