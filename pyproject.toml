@@ -22,3 +22,4 @@ dependencies = [
 
 [project.scripts]
 tennis-cut = "tennis_cut.tennis_cut:main"
+tennis-compare = "tennis_cut.comparison.cli:main"

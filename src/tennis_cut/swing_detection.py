@@ -6,7 +6,6 @@ import json
 import logging
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
 import time
 import warnings
@@ -202,7 +201,8 @@ def probe_video(video: Path) -> dict:
             text=True,
         )
     except subprocess.CalledProcessError as error:
-        print(error.stderr, file=sys.stderr)
+        if error.stderr:
+            _LOG.error(error.stderr.strip())
         raise
     metadata = json.loads(result.stdout)
     video_stream = next(

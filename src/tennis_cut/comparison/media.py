@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fractions import Fraction
 import json
+from math import lcm
 from pathlib import Path
 import subprocess
 import tempfile
@@ -13,6 +14,8 @@ from typing import Protocol
 from PIL import Image
 
 from .planning import (
+    MAX_EXACT_FILTER_TICK,
+    MAX_OUTPUT_TIMESCALE,
     ComparisonRenderPlan,
     ComparisonSource,
     PlayerObservation,
@@ -92,6 +95,29 @@ def inspect_comparison_source(video: Path) -> ComparisonSource:
         height=inspected.height,
         inspected_media=inspected.media,
     )
+
+
+def has_audio_stream(video: Path) -> bool:
+    """Return whether the source exposes at least one audio stream."""
+
+    completed = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "json",
+            str(video),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return bool(json.loads(completed.stdout).get("streams", []))
 
 
 class PlayerLocator(Protocol):
@@ -247,3 +273,103 @@ def render_comparison(plan: ComparisonRenderPlan) -> Path:
             check=True,
         )
     return plan.artifact.path
+
+
+def render_compilation(
+    plans: tuple[ComparisonRenderPlan, ...], output: Path
+) -> Path:
+    """Encode ordered comparison plans once as one silent compilation."""
+
+    if not plans:
+        raise ValueError("at least one comparison plan is required")
+    timescale = lcm(*(plan.output_time_base.denominator for plan in plans))
+    if timescale > MAX_OUTPUT_TIMESCALE:
+        raise ValueError("compilation requires an unsupported output timescale")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as directory:
+        temporary = Path(directory)
+        event_directory = temporary / "events"
+        event_directory.mkdir()
+        ticks: list[int] = []
+        next_clip_tick = 0
+        event_index = 0
+        for plan_index, plan in enumerate(plans):
+            user_directory = temporary / f"user_{plan_index:03d}"
+            pro_directory = temporary / f"pro_{plan_index:03d}"
+            user_directory.mkdir()
+            pro_directory.mkdir()
+            user_frames = _decode_frames(
+                plan.user.window.source.path,
+                tuple(event.user_frame.ordinal for event in plan.events),
+                user_directory,
+            )
+            pro_frames = _decode_frames(
+                plan.pro.window.source.path,
+                tuple(event.pro_frame.ordinal for event in plan.events),
+                pro_directory,
+            )
+            for event in plan.events:
+                canvas = Image.new(
+                    "RGB",
+                    (plan.layout.output.width, plan.layout.output.height),
+                    "black",
+                )
+                canvas.paste(
+                    _render_panel(
+                        user_frames[event.user_frame.ordinal],
+                        plan.user.crop,
+                        plan.layout.user_panel,
+                    ),
+                    plan.layout.user_panel.x_y,
+                )
+                canvas.paste(
+                    _render_panel(
+                        pro_frames[event.pro_frame.ordinal],
+                        plan.pro.crop,
+                        plan.layout.pro_panel,
+                    ),
+                    plan.layout.pro_panel.x_y,
+                )
+                canvas.save(event_directory / f"event_{event_index:09d}.png")
+                plan_tick_scale = timescale // plan.output_time_base.denominator
+                ticks.append(next_clip_tick + event.output_tick * plan_tick_scale)
+                event_index += 1
+            next_clip_tick = ticks[-1] + 1
+
+        if ticks[-1] > MAX_EXACT_FILTER_TICK:
+            raise ValueError("compilation ticks exceed the renderer's exact range")
+
+        tick_expression = "+".join(
+            f"{tick}*eq(N\\,{index})" for index, tick in enumerate(ticks)
+        )
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-framerate",
+                "1",
+                "-start_number",
+                "0",
+                "-i",
+                str(event_directory / "event_%09d.png"),
+                "-an",
+                "-vf",
+                f"settb=expr=1/{timescale},setpts={tick_expression}",
+                "-fps_mode",
+                "vfr",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-enc_time_base",
+                f"1:{timescale}",
+                "-video_track_timescale",
+                str(timescale),
+                str(output),
+                "-y",
+            ],
+            check=True,
+        )
+    return output
