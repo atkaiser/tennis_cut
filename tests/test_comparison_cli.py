@@ -114,6 +114,25 @@ class ComparisonCliTests(unittest.TestCase):
         self.assertIsNone(args.device)
         self.assertFalse(args.clips)
 
+    def test_parser_rejects_invalid_decimal_playback_factors(self) -> None:
+        for option, value in (
+            ("--pro-speed", "1/4"),
+            ("--slowmo", "1/4"),
+            ("--slowmo", "NaN"),
+            ("--slowmo", "Infinity"),
+        ):
+            arguments = ["user.mov", "pro.mov", "--pro-speed", "1"]
+            if option == "--pro-speed":
+                arguments[-1] = value
+            else:
+                arguments.extend((option, value))
+            with self.subTest(option=option, value=value), patch(
+                "sys.stderr", new_callable=io.StringIO
+            ), self.assertRaises(SystemExit) as raised:
+                build_parser().parse_args(arguments)
+
+            self.assertEqual(raised.exception.code, 2)
+
     def test_verbose_and_quiet_are_mutually_exclusive(self) -> None:
         with (
             patch("sys.stderr", new_callable=io.StringIO),

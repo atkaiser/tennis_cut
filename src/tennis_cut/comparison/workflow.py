@@ -263,7 +263,7 @@ def _preflight(request: ComparisonRequest, dependencies: ComparisonDependencies)
             raise InvalidComparisonRequest(f"missing {role} video: {path}")
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             raise InvalidComparisonRequest(f"unsupported {role} video: {path}")
-    if request.user_video.resolve() == request.pro_video.resolve():
+    if request.user_video.samefile(request.pro_video):
         raise InvalidComparisonRequest("user and pro videos must be distinct files")
     if request.pro_speed <= 0:
         raise InvalidComparisonRequest("pro speed must be greater than zero")

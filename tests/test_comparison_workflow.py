@@ -23,6 +23,7 @@ from tennis_cut.comparison.pro_selection import (
 from tennis_cut.comparison.workflow import (
     ComparisonProcessingFailed,
     ComparisonSelectionCancelled,
+    InvalidComparisonRequest,
     OutputCollision,
 )
 from tennis_cut.swing_detection import DetectedSwing
@@ -174,6 +175,29 @@ class FailedDetectionDependencies(ZeroComparisonDependencies):
 
 
 class CompareVideosTests(unittest.TestCase):
+    def test_preflight_rejects_two_paths_to_the_same_source_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video, _, models = comparison_files(directory)
+            pro_video = directory / "pro-hardlink.mov"
+            pro_video.hardlink_to(user_video)
+            request = ComparisonRequest(
+                user_video=user_video,
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
+            )
+
+            with self.assertRaisesRegex(
+                InvalidComparisonRequest,
+                "user and pro videos must be distinct files",
+            ):
+                compare_videos(
+                    request, ZeroComparisonDependencies(user_video, pro_video)
+                )
+
     def test_zero_comparisons_succeeds_without_output_and_selects_before_detection(
         self,
     ) -> None:

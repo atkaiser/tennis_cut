@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 import logging
 from pathlib import Path
@@ -28,8 +29,8 @@ from .workflow import (
 
 def _fraction(value: str) -> Fraction:
     try:
-        return Fraction(value)
-    except (ValueError, ZeroDivisionError) as error:
+        return Fraction(Decimal(value))
+    except (InvalidOperation, OverflowError, ValueError, ZeroDivisionError) as error:
         raise argparse.ArgumentTypeError(f"invalid decimal value: {value}") from error
 
 
