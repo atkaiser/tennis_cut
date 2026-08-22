@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "tennis-cut"
 version = "0.1.0"
@@ -23,3 +27,8 @@ dependencies = [
 [project.scripts]
 tennis-cut = "tennis_cut.tennis_cut:main"
 tennis-compare = "tennis_cut.comparison.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["tennis_cut*", "utilities*"]
+namespaces = true

@@ -280,7 +280,7 @@ def _encode_event_images(
             "-v",
             "error",
             "-framerate",
-            "1",
+            str(timescale),
             "-start_number",
             "0",
             "-i",

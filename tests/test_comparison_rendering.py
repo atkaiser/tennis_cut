@@ -213,7 +213,7 @@ def probe_output(video: Path) -> dict:
             "-show_streams",
             "-show_frames",
             "-show_entries",
-            "stream=codec_type,width,height,time_base:frame=pts",
+            "stream=codec_type,width,height,time_base,duration_ts:frame=pts",
             "-of",
             "json",
             str(video),
@@ -363,6 +363,10 @@ class GeneratedMediaRenderingTests(unittest.TestCase):
                             [int(frame["pts"]) for frame in clip_payload["frames"]],
                             [event.output_tick for event in plan.events],
                         )
+                        self.assertEqual(
+                            int(clip_payload["streams"][0]["duration_ts"]),
+                            plan.events[-1].output_tick + 1,
+                        )
 
                     payload = probe_output(primary)
                     streams = payload["streams"]
@@ -387,6 +391,9 @@ class GeneratedMediaRenderingTests(unittest.TestCase):
                     self.assertEqual(
                         [int(frame["pts"]) for frame in payload["frames"]],
                         expected_ticks,
+                    )
+                    self.assertEqual(
+                        int(streams[0]["duration_ts"]), expected_ticks[-1] + 1
                     )
 
                     decoded = decode_output(

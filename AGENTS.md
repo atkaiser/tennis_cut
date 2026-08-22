@@ -7,7 +7,7 @@ See `Directory overview` in main README.md
 - Setup (Python >= 3.11):
   - `python -m venv .venv && source .venv/bin/activate`
   - `pip install -e .`
-- Lint: `ruff .` (required before PRs; use `ruff --fix .` to autofix).
+- Lint: `ruff check .` (required before PRs; use `ruff check --fix .` to autofix).
 - Sanity checks (after downloading example media):
   - Download: `wget 'https://www.dropbox.com/scl/fi/dce0wabuy0kss3xtcp7th/tester.MOV?rlkey=y8cwf7wssvswq1dxj12rxrrhw&st=i4yi7aeh&dl=0' -O examples/videos/tester.MOV`
     and `wget 'https://www.dropbox.com/scl/fi/5pxrm1y9ij8qvls07ve03/tester.wav?rlkey=rxlfhsdxigrqf3zwye6jk8b1q&st=icvmew0l&dl=0' -O examples/wavs/tester.wav`
@@ -21,7 +21,7 @@ See `Directory overview` in main README.md
 - Prefer descriptive file names (`prepare_audio_windows.py`, `train_swing_classifier.py`).
 
 ## Testing Guidelines
-- No formal unit test suite yet; validate via example runs above.
+- Acceptance suite: follow `Acceptance tests` in `README.md`; it is required before PRs.
 - Ensure `ffmpeg`/`ffprobe` are installed; GPU/MPS optional.
 - Do not commit large binaries; use `examples/` download links for local tests.
 
