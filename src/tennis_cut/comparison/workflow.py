@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fractions import Fraction
 import os
@@ -16,6 +18,7 @@ from tennis_cut.swing_detection import (
     DEFAULT_SHOT_TYPE_MODEL,
     DetectedSwing,
     DetectionConfig,
+    resolve_device,
 )
 
 from .media import PlayerLocator
@@ -173,18 +176,9 @@ class SystemComparisonDependencies:
         return detect_user_swings(request.user_video, request.detection_config)
 
     def create_player_locator(self, device: str | None) -> PlayerLocator:
-        import torch
         from utilities import PersonDetector
 
-        selected_device = device
-        if selected_device is None:
-            if torch.backends.mps.is_available():
-                selected_device = "mps"
-            elif torch.cuda.is_available():
-                selected_device = "cuda"
-            else:
-                selected_device = "cpu"
-        return PersonDetector(selected_device)
+        return PersonDetector(resolve_device(device))
 
     def observe_players(
         self, window: SelectedSourceWindow, locator: PlayerLocator
@@ -285,7 +279,9 @@ def _preflight(request: ComparisonRequest, dependencies: ComparisonDependencies)
     if collisions:
         raise OutputCollision(collisions)
     writable_parent = _nearest_existing_parent(request.output_directory)
-    if not writable_parent.is_dir() or not os.access(writable_parent, os.W_OK):
+    if not writable_parent.is_dir() or not os.access(
+        writable_parent, os.W_OK | os.X_OK
+    ):
         raise InvalidComparisonRequest(
             f"output destination is not writable: {request.output_directory}"
         )
@@ -342,10 +338,7 @@ def compare_videos(
     primary = primary_output_path(request)
     clips_directory = primary.with_name(f"{primary.stem}_clips")
     staging_parent = _nearest_existing_parent(request.output_directory.parent)
-    with tempfile.TemporaryDirectory(
-        prefix=".tennis-compare-", dir=staging_parent
-    ) as directory_name:
-        staging = Path(directory_name)
+    with _staging_directory(staging_parent) as staging:
         staged_primary = staging / primary.name
         staged_clips = tuple(
             staging / clips_directory.name / f"comparison_{index:03d}.mp4"
@@ -393,6 +386,19 @@ def compare_videos(
             clips_directory=clips_directory,
         )
     return ComparisonResult(published, len(plans))
+
+
+@contextmanager
+def _staging_directory(parent: Path) -> Iterator[Path]:
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".tennis-compare-", dir=parent
+        ) as directory_name:
+            yield Path(directory_name)
+    except (ComparisonProcessingFailed, OutputCollision):
+        raise
+    except OSError as error:
+        raise ComparisonProcessingFailed("artifact publication", str(error)) from error
 
 
 def _publish_artifacts(

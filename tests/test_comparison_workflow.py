@@ -207,6 +207,16 @@ class FailedUserObservationDependencies(MatchingDependencies):
         return super().observe_players(window, locator)
 
 
+class DirectRenderDependencies(MatchingDependencies):
+    def render_artifacts(
+        self,
+        plans: tuple[ComparisonRenderPlan, ...],
+        primary: Path,
+        clips: tuple[Path, ...],
+    ) -> None:
+        primary.write_bytes(b"silent compilation")
+
+
 class CompareVideosTests(unittest.TestCase):
     def test_automatic_device_selection_prefers_mps_then_cuda_then_cpu(self) -> None:
         cases = (
@@ -248,6 +258,35 @@ class CompareVideosTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 InvalidComparisonRequest,
                 "user and pro videos must be distinct files",
+            ):
+                compare_videos(
+                    request, ZeroComparisonDependencies(user_video, pro_video)
+                )
+
+    def test_preflight_rejects_destination_without_search_permission(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video, pro_video, models = comparison_files(directory)
+            request = ComparisonRequest(
+                user_video=user_video,
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                output_directory=directory / "outputs",
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
+            )
+
+            with (
+                patch.object(
+                    comparison_workflow.os,
+                    "access",
+                    side_effect=lambda path, mode: mode == os.W_OK,
+                ),
+                self.assertRaisesRegex(
+                    InvalidComparisonRequest,
+                    "output destination is not writable",
+                ),
             ):
                 compare_videos(
                     request, ZeroComparisonDependencies(user_video, pro_video)
@@ -541,6 +580,59 @@ class CompareVideosTests(unittest.TestCase):
             self.assertEqual(tuple(directory.glob(".tennis-compare-*")), ())
             self.assertEqual(user_video.read_bytes(), b"user source")
             self.assertEqual(pro_video.read_bytes(), b"pro source")
+
+    def test_staging_and_output_directory_failures_are_publication_failures(
+        self,
+    ) -> None:
+        failure_cases = ("staging", "output directory")
+        for failure in failure_cases:
+            with (
+                self.subTest(failure=failure),
+                tempfile.TemporaryDirectory() as directory_name,
+            ):
+                directory = Path(directory_name)
+                user_video, pro_video, models = comparison_files(directory)
+                output_directory = directory / "outputs"
+                request = ComparisonRequest(
+                    user_video=user_video,
+                    pro_video=pro_video,
+                    pro_speed=Fraction(1),
+                    output_directory=output_directory,
+                    audio_model=models[0],
+                    shot_model=models[1],
+                    shot_type_model=models[2],
+                )
+                dependencies = DirectRenderDependencies(user_video, pro_video)
+                original_mkdir = Path.mkdir
+
+                def fail_output_mkdir(path: Path, *args, **kwargs) -> None:
+                    if path == output_directory:
+                        raise OSError("cannot create output directory")
+                    original_mkdir(path, *args, **kwargs)
+
+                effect = (
+                    patch.object(
+                        comparison_workflow.tempfile,
+                        "TemporaryDirectory",
+                        side_effect=OSError("cannot create staging directory"),
+                    )
+                    if failure == "staging"
+                    else patch.object(Path, "mkdir", new=fail_output_mkdir)
+                )
+                expected = (
+                    "artifact publication failed: cannot create staging directory"
+                    if failure == "staging"
+                    else "artifact publication failed: cannot create output directory"
+                )
+
+                with effect, self.assertRaisesRegex(
+                    ComparisonProcessingFailed, expected
+                ):
+                    compare_videos(request, dependencies)
+
+                self.assertFalse(output_directory.exists())
+                self.assertEqual(user_video.read_bytes(), b"user source")
+                self.assertEqual(pro_video.read_bytes(), b"pro source")
 
     def test_selection_and_detection_failures_are_typed_by_stage(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:

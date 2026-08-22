@@ -71,17 +71,25 @@ class LegacySwingDetails:
     crop: tuple[int, int, int, int]
 
 
+def resolve_device(device: str | None) -> str:
+    """Resolve an explicit or preferred available compute device."""
+
+    if device is not None:
+        return device
+    import torch
+
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 def _load_model(model_path: Path, device: str | None):
     import torch
     from fastai.learner import load_learner
 
-    if device is None:
-        if torch.backends.mps.is_available():
-            device = "mps"
-        elif torch.cuda.is_available():
-            device = "cuda"
-        else:
-            device = "cpu"
+    device = resolve_device(device)
     torch_device = torch.device(device)
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -264,25 +272,24 @@ def _detect_user_swings_with_details(
     *,
     report_progress: bool,
 ) -> tuple[LegacySwingDetails, ...]:
+    selected_device = resolve_device(detection_config.device)
     with tempfile.TemporaryDirectory() as temporary_directory:
         temporary_path = Path(temporary_directory)
         wav_path = temporary_path / "audio.wav"
         extract_audio(user_video, wav_path)
 
-        pop_detector = PopDetector(
-            detection_config.audio_model, device=detection_config.device
-        )
+        pop_detector = PopDetector(detection_config.audio_model, device=selected_device)
         impact_times = pop_detector.find_impacts(wav_path)
-        person_detector = PersonDetector(detection_config.device)
+        person_detector = PersonDetector(selected_device)
         shot_detector = (
-            ShotDetector(detection_config.shot_model, device=detection_config.device)
+            ShotDetector(detection_config.shot_model, device=selected_device)
             if detection_config.shot_model is not None
             else None
         )
         shot_type_classifier = (
             ShotTypeClassifier(
                 detection_config.shot_type_model,
-                device=detection_config.device,
+                device=selected_device,
             )
             if detection_config.shot_type_model is not None
             else None

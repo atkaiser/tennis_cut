@@ -32,6 +32,45 @@ class DetectedSwingTests(unittest.TestCase):
 
 
 class DetectUserSwingsTests(unittest.TestCase):
+    def test_automatic_device_selection_applies_to_every_detection_model(self) -> None:
+        pop_detector = Mock()
+        pop_detector.find_impacts.return_value = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "user.mp4"
+            source.touch()
+            config = DetectionConfig(
+                audio_model=Path("audio.pth"),
+                shot_model=Path("shot.pkl"),
+                shot_type_model=Path("type.pkl"),
+            )
+
+            with (
+                patch(
+                    "tennis_cut.swing_detection.probe_video",
+                    return_value={"resolution": (640, 360)},
+                ),
+                patch("tennis_cut.swing_detection.extract_audio"),
+                patch(
+                    "tennis_cut.swing_detection.PopDetector",
+                    return_value=pop_detector,
+                ) as pop_type,
+                patch("tennis_cut.swing_detection.PersonDetector") as person_type,
+                patch("tennis_cut.swing_detection.ShotDetector") as shot_type,
+                patch(
+                    "tennis_cut.swing_detection.ShotTypeClassifier"
+                ) as classifier_type,
+                patch("torch.backends.mps.is_available", return_value=True),
+                patch("torch.cuda.is_available", return_value=True),
+            ):
+                swings = detect_user_swings(source, config)
+
+        self.assertEqual(swings, ())
+        pop_type.assert_called_once_with(Path("audio.pth"), device="mps")
+        person_type.assert_called_once_with("mps")
+        shot_type.assert_called_once_with(Path("shot.pkl"), device="mps")
+        classifier_type.assert_called_once_with(Path("type.pkl"), device="mps")
+
     def test_returns_only_accepted_swings_in_source_order_with_exact_time(self) -> None:
         pop_detector = Mock()
         pop_detector.find_impacts.return_value = [2.125, 4.25, 6.5]
