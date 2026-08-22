@@ -338,7 +338,12 @@ def compare_videos(
     primary = primary_output_path(request)
     clips_directory = primary.with_name(f"{primary.stem}_clips")
     staging_parent = _nearest_existing_parent(request.output_directory.parent)
-    with _staging_directory(staging_parent) as staging:
+    with _staging_directory(
+        staging_parent,
+        primary=primary,
+        clips_directory=clips_directory if request.clips else None,
+        output_existed=primary.parent.exists(),
+    ) as staging:
         staged_primary = staging / primary.name
         staged_clips = tuple(
             staging / clips_directory.name / f"comparison_{index:03d}.mp4"
@@ -389,16 +394,47 @@ def compare_videos(
 
 
 @contextmanager
-def _staging_directory(parent: Path) -> Iterator[Path]:
+def _staging_directory(
+    parent: Path,
+    *,
+    primary: Path,
+    clips_directory: Path | None,
+    output_existed: bool,
+) -> Iterator[Path]:
     try:
-        with tempfile.TemporaryDirectory(
+        temporary_directory = tempfile.TemporaryDirectory(
             prefix=".tennis-compare-", dir=parent
-        ) as directory_name:
-            yield Path(directory_name)
-    except (ComparisonProcessingFailed, OutputCollision):
-        raise
+        )
     except OSError as error:
         raise ComparisonProcessingFailed("artifact publication", str(error)) from error
+    body_error: BaseException | None = None
+    try:
+        yield Path(temporary_directory.name)
+    except OSError as error:
+        body_error = ComparisonProcessingFailed("artifact publication", str(error))
+        raise body_error from error
+    except BaseException as error:
+        body_error = error
+        raise
+    finally:
+        try:
+            temporary_directory.cleanup()
+        except OSError as cleanup_error:
+            try:
+                temporary_directory.cleanup()
+            except OSError as retry_error:
+                if body_error is not None:
+                    body_error.add_note(f"staging cleanup also failed: {retry_error}")
+            if body_error is None:
+                _rollback_artifacts(
+                    primary=primary,
+                    clips_directory=clips_directory,
+                    output_directory=primary.parent,
+                    output_existed=output_existed,
+                )
+                raise ComparisonProcessingFailed(
+                    "artifact publication", str(cleanup_error)
+                ) from cleanup_error
 
 
 def _publish_artifacts(
@@ -436,18 +472,36 @@ def _publish_artifacts(
         os.replace(staged_primary, primary)
         primary_published = True
     except OSError as error:
-        if primary_published:
-            primary.unlink(missing_ok=True)
-        if clips_published:
-            shutil.rmtree(clips_directory, ignore_errors=True)
-        if not output_existed:
-            try:
-                primary.parent.rmdir()
-            except OSError:
-                pass
+        _rollback_artifacts(
+            primary=primary if primary_published else None,
+            clips_directory=clips_directory if clips_published else None,
+            output_directory=primary.parent,
+            output_existed=output_existed,
+        )
         raise ComparisonProcessingFailed("artifact publication", str(error)) from error
 
     published_clips = tuple(
         clips_directory / clip.name for clip in staged_clips
     )
     return (primary, *published_clips)
+
+
+def _rollback_artifacts(
+    *,
+    primary: Path | None,
+    clips_directory: Path | None,
+    output_directory: Path,
+    output_existed: bool,
+) -> None:
+    if primary is not None:
+        try:
+            primary.unlink(missing_ok=True)
+        except OSError:
+            pass
+    if clips_directory is not None:
+        shutil.rmtree(clips_directory, ignore_errors=True)
+    if not output_existed:
+        try:
+            output_directory.rmdir()
+        except OSError:
+            pass

@@ -634,6 +634,66 @@ class CompareVideosTests(unittest.TestCase):
                 self.assertEqual(user_video.read_bytes(), b"user source")
                 self.assertEqual(pro_video.read_bytes(), b"pro source")
 
+    def test_staging_cleanup_failure_rolls_back_already_published_artifacts(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video, pro_video, models = comparison_files(directory)
+            output_directory = directory / "outputs"
+            request = ComparisonRequest(
+                user_video=user_video,
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                output_directory=output_directory,
+                clips=True,
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
+            )
+            staging_paths: list[Path] = []
+
+            class CleanupFailsOnce:
+                def __init__(self, *, prefix: str, dir: Path) -> None:
+                    self.name = comparison_workflow.tempfile.mkdtemp(
+                        prefix=prefix, dir=dir
+                    )
+                    self.cleanup_calls = 0
+                    staging_paths.append(Path(self.name))
+
+                def __enter__(self) -> str:
+                    return self.name
+
+                def __exit__(self, exc_type, exc, traceback) -> None:
+                    self.cleanup()
+
+                def cleanup(self) -> None:
+                    self.cleanup_calls += 1
+                    if self.cleanup_calls == 1:
+                        if Path(self.name).exists():
+                            comparison_workflow.shutil.rmtree(self.name)
+                        raise OSError("staging cleanup failed")
+
+            with (
+                patch.object(
+                    comparison_workflow.tempfile,
+                    "TemporaryDirectory",
+                    CleanupFailsOnce,
+                ),
+                self.assertRaisesRegex(
+                    ComparisonProcessingFailed,
+                    "artifact publication failed: staging cleanup failed",
+                ),
+            ):
+                compare_videos(
+                    request, MatchingDependencies(user_video, pro_video)
+                )
+
+            self.assertFalse(output_directory.exists())
+            self.assertTrue(all(not path.exists() for path in staging_paths))
+            self.assertEqual(user_video.read_bytes(), b"user source")
+            self.assertEqual(pro_video.read_bytes(), b"pro source")
+
     def test_selection_and_detection_failures_are_typed_by_stage(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
