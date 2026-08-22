@@ -126,12 +126,18 @@ class ComparisonCliTests(unittest.TestCase):
                 arguments[-1] = value
             else:
                 arguments.extend((option, value))
-            with self.subTest(option=option, value=value), patch(
-                "sys.stderr", new_callable=io.StringIO
-            ), self.assertRaises(SystemExit) as raised:
+            with (
+                self.subTest(option=option, value=value),
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+                self.assertRaises(SystemExit) as raised,
+            ):
                 build_parser().parse_args(arguments)
 
             self.assertEqual(raised.exception.code, 2)
+            self.assertEqual(
+                stderr.getvalue(),
+                f"tennis-compare: argument {option}: invalid decimal value: {value}\n",
+            )
 
     def test_verbose_and_quiet_are_mutually_exclusive(self) -> None:
         with (

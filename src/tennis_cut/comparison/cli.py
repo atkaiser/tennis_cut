@@ -27,6 +27,11 @@ from .workflow import (
 )
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.exit(2, f"{self.prog}: {message}\n")
+
+
 def _fraction(value: str) -> Fraction:
     try:
         return Fraction(Decimal(value))
@@ -35,7 +40,7 @@ def _fraction(value: str) -> Fraction:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _ArgumentParser(
         prog="tennis-compare",
         description="Create contact-aligned user-to-pro swing comparisons",
     )
