@@ -44,6 +44,20 @@ If I want to label more videos follow this pipline:
 3. Also regenerate the swing model (optional)
 
 
+## Comparing videos
+
+After saving a pro contact-frame selection beside the pro video, produce a
+silent contact-aligned comparison compilation with:
+
+```bash
+tennis-compare USER_VIDEO PRO_VIDEO --pro-speed FACTOR
+```
+
+`FACTOR` describes the pro video's published speed (`1.0` for real time or
+`0.25` for quarter speed). Use `--slowmo`, `--output-dir`, and `--clips` to
+override the playback factor, destination, or optional comparison clip output.
+
+
 ## Linting
 
 The project uses [Ruff](https://docs.astral.sh/ruff/) for linting. To check the

@@ -15,6 +15,7 @@ from tennis_cut.comparison.media import (
     inspect_comparison_source,
     observe_players,
     render_comparison,
+    render_compilation,
 )
 from tennis_cut.comparison.planning import (
     ArtifactRequest,
@@ -232,6 +233,100 @@ class GeneratedMediaRenderingTests(unittest.TestCase):
                 len({event.user_frame.ordinal for event in plan.events}),
             )
             self.assertEqual((sha256(user_path), sha256(pro_path)), original_hashes)
+
+    def test_compilation_encodes_ordered_comparison_clips_once_with_hard_cut(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_path = create_source(
+                directory,
+                name="user",
+                frame_count=31,
+                rate=10,
+                timescale=1000,
+                role="user",
+            )
+            pro_path = create_source(
+                directory,
+                name="pro",
+                frame_count=41,
+                rate=5,
+                timescale=90000,
+                role="pro",
+            )
+            user_source = inspect_comparison_source(user_path)
+            pro_source = inspect_comparison_source(pro_path)
+            windows = select_comparison_windows(
+                user_source=user_source,
+                user_swings=(
+                    DetectedSwing(2, Fraction(5, 2), "forehand"),
+                    DetectedSwing(7, Fraction(3), "forehand"),
+                ),
+                pro_source=pro_source,
+                pro_selection=ProSelection(
+                    pro_path, pro_source.inspected_media.frames[25], "forehand"
+                ),
+                pro_speed=Fraction(1, 4),
+            )
+            locator = WhitePlayerLocator()
+            pro = prepare_source_window(
+                windows.pro, observe_players(windows.pro, locator)
+            )
+            plans = tuple(
+                build_render_plan(
+                    user=prepare_source_window(
+                        window, observe_players(window, locator)
+                    ),
+                    pro=pro,
+                    slow_motion=Fraction(1),
+                    artifact=ArtifactRequest(directory / f"clip_{index}.mp4"),
+                )
+                for index, window in enumerate(windows.user)
+            )
+            output = directory / "compilation.mp4"
+
+            self.assertEqual(render_compilation(plans, output), output)
+
+            probe = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_streams",
+                    "-show_frames",
+                    "-show_entries",
+                    "stream=codec_type,time_base:frame=pts",
+                    "-of",
+                    "json",
+                    str(output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            payload = json.loads(probe.stdout)
+            self.assertEqual(
+                [stream["codec_type"] for stream in payload["streams"]], ["video"]
+            )
+            first_ticks = [event.output_tick for event in plans[0].events]
+            second_start = first_ticks[-1] + 1
+            expected_ticks = first_ticks + [
+                second_start + event.output_tick for event in plans[1].events
+            ]
+            self.assertEqual(
+                [int(frame["pts"]) for frame in payload["frames"]], expected_ticks
+            )
+
+            decoded = decode_output(output, directory / "decoded-compilation")
+            cut_index = len(plans[0].events)
+            with Image.open(decoded[cut_index - 1]) as before_cut:
+                before_red = ImageStat.Stat(before_cut.crop((0, 0, 640, 720))).median[0]
+            with Image.open(decoded[cut_index]) as after_cut:
+                after_red = ImageStat.Stat(after_cut.crop((0, 0, 640, 720))).median[0]
+            expected_second_red = 30 + plans[1].events[0].user_frame.ordinal * 5
+            self.assertNotEqual(before_red, after_red)
+            self.assertAlmostEqual(after_red, expected_second_red, delta=8)
 
 
 if __name__ == "__main__":

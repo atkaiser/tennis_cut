@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fractions import Fraction
 import json
+from math import lcm
 from pathlib import Path
 import subprocess
 import tempfile
@@ -13,6 +14,8 @@ from typing import Protocol
 from PIL import Image
 
 from .planning import (
+    MAX_EXACT_FILTER_TICK,
+    MAX_OUTPUT_TIMESCALE,
     ComparisonRenderPlan,
     ComparisonSource,
     PlayerObservation,
@@ -20,6 +23,23 @@ from .planning import (
     SelectedSourceWindow,
 )
 from .pro_selection import DecodedFrame, InspectedMedia
+
+
+class MediaCommandFailed(RuntimeError):
+    """Stable media-command failure with diagnostics retained out of band."""
+
+    def __init__(self, executable: str, returncode: int, diagnostics: str) -> None:
+        self.diagnostics = diagnostics
+        super().__init__(f"{executable} exited with status {returncode}")
+
+
+def _run_media_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise MediaCommandFailed(
+            command[0], completed.returncode, completed.stderr.strip()
+        )
+    return completed
 
 
 @dataclass(frozen=True)
@@ -94,6 +114,29 @@ def inspect_comparison_source(video: Path) -> ComparisonSource:
     )
 
 
+def has_audio_stream(video: Path) -> bool:
+    """Return whether the source exposes at least one audio stream."""
+
+    completed = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "json",
+            str(video),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return bool(json.loads(completed.stdout).get("streams", []))
+
+
 class PlayerLocator(Protocol):
     """Locate one player in an exact decoded-frame image."""
 
@@ -110,7 +153,7 @@ def _decode_frames(
         return {}
     selection = "+".join(f"eq(n\\,{ordinal})" for ordinal in unique_ordinals)
     output_pattern = output_directory / "frame_%09d.png"
-    subprocess.run(
+    _run_media_command(
         [
             "ffmpeg",
             "-v",
@@ -128,8 +171,7 @@ def _decode_frames(
             "0",
             str(output_pattern),
             "-y",
-        ],
-        check=True,
+        ]
     )
     paths = tuple(sorted(output_directory.glob("frame_*.png")))
     if len(paths) != len(unique_ordinals):
@@ -168,82 +210,149 @@ def _render_panel(image_path: Path, crop: Rectangle, panel: Rectangle) -> Image.
         ).convert("RGB")
 
 
+def _render_plan_event_images(
+    plan: ComparisonRenderPlan,
+    temporary: Path,
+    event_directory: Path,
+    *,
+    plan_index: int,
+    first_event_index: int,
+) -> int:
+    user_directory = temporary / f"user_{plan_index:03d}"
+    pro_directory = temporary / f"pro_{plan_index:03d}"
+    user_directory.mkdir()
+    pro_directory.mkdir()
+    user_frames = _decode_frames(
+        plan.user.window.source.path,
+        tuple(event.user_frame.ordinal for event in plan.events),
+        user_directory,
+    )
+    pro_frames = _decode_frames(
+        plan.pro.window.source.path,
+        tuple(event.pro_frame.ordinal for event in plan.events),
+        pro_directory,
+    )
+    for offset, event in enumerate(plan.events):
+        canvas = Image.new(
+            "RGB", (plan.layout.output.width, plan.layout.output.height), "black"
+        )
+        canvas.paste(
+            _render_panel(
+                user_frames[event.user_frame.ordinal],
+                plan.user.crop,
+                plan.layout.user_panel,
+            ),
+            plan.layout.user_panel.x_y,
+        )
+        canvas.paste(
+            _render_panel(
+                pro_frames[event.pro_frame.ordinal],
+                plan.pro.crop,
+                plan.layout.pro_panel,
+            ),
+            plan.layout.pro_panel.x_y,
+        )
+        canvas.save(event_directory / f"event_{first_event_index + offset:09d}.png")
+    return first_event_index + len(plan.events)
+
+
+def _encode_event_images(
+    event_directory: Path,
+    ticks: list[int],
+    timescale: int,
+    output: Path,
+) -> None:
+    tick_expression = "+".join(
+        f"{tick}*eq(N\\,{index})" for index, tick in enumerate(ticks)
+    )
+    _run_media_command(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-framerate",
+            "1",
+            "-start_number",
+            "0",
+            "-i",
+            str(event_directory / "event_%09d.png"),
+            "-an",
+            "-vf",
+            f"settb=expr=1/{timescale},setpts={tick_expression}",
+            "-fps_mode",
+            "vfr",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-enc_time_base",
+            f"1:{timescale}",
+            "-video_track_timescale",
+            str(timescale),
+            str(output),
+            "-y",
+        ]
+    )
+
+
 def render_comparison(plan: ComparisonRenderPlan) -> Path:
     """Render one planned silent, fixed-crop comparison clip."""
 
     plan.artifact.path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as directory:
         temporary = Path(directory)
-        user_directory = temporary / "user"
-        pro_directory = temporary / "pro"
         event_directory = temporary / "events"
-        user_directory.mkdir()
-        pro_directory.mkdir()
         event_directory.mkdir()
-        user_frames = _decode_frames(
-            plan.user.window.source.path,
-            tuple(event.user_frame.ordinal for event in plan.events),
-            user_directory,
+        _render_plan_event_images(
+            plan,
+            temporary,
+            event_directory,
+            plan_index=0,
+            first_event_index=0,
         )
-        pro_frames = _decode_frames(
-            plan.pro.window.source.path,
-            tuple(event.pro_frame.ordinal for event in plan.events),
-            pro_directory,
-        )
-
-        for index, event in enumerate(plan.events):
-            canvas = Image.new(
-                "RGB",
-                (plan.layout.output.width, plan.layout.output.height),
-                "black",
-            )
-            user_panel = _render_panel(
-                user_frames[event.user_frame.ordinal],
-                plan.user.crop,
-                plan.layout.user_panel,
-            )
-            pro_panel = _render_panel(
-                pro_frames[event.pro_frame.ordinal],
-                plan.pro.crop,
-                plan.layout.pro_panel,
-            )
-            canvas.paste(user_panel, plan.layout.user_panel.x_y)
-            canvas.paste(pro_panel, plan.layout.pro_panel.x_y)
-            event_path = event_directory / f"event_{index:09d}.png"
-            canvas.save(event_path)
-
-        timescale = plan.output_time_base.denominator
-        tick_expression = "+".join(
-            f"{event.output_tick}*eq(N\\,{index})"
-            for index, event in enumerate(plan.events)
-        )
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-v",
-                "error",
-                "-framerate",
-                "1",
-                "-start_number",
-                "0",
-                "-i",
-                str(event_directory / "event_%09d.png"),
-                "-an",
-                "-vf",
-                f"settb=expr=1/{timescale},setpts={tick_expression}",
-                "-fps_mode",
-                "vfr",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                "-enc_time_base",
-                f"1:{timescale}",
-                "-video_track_timescale",
-                str(timescale),
-                str(plan.artifact.path),
-                "-y",
-            ],
-            check=True,
+        _encode_event_images(
+            event_directory,
+            [event.output_tick for event in plan.events],
+            plan.output_time_base.denominator,
+            plan.artifact.path,
         )
     return plan.artifact.path
+
+
+def render_compilation(
+    plans: tuple[ComparisonRenderPlan, ...], output: Path
+) -> Path:
+    """Encode ordered comparison plans once as one silent compilation."""
+
+    if not plans:
+        raise ValueError("at least one comparison plan is required")
+    timescale = lcm(*(plan.output_time_base.denominator for plan in plans))
+    if timescale > MAX_OUTPUT_TIMESCALE:
+        raise ValueError("compilation requires an unsupported output timescale")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as directory:
+        temporary = Path(directory)
+        event_directory = temporary / "events"
+        event_directory.mkdir()
+        ticks: list[int] = []
+        next_clip_tick = 0
+        event_index = 0
+        for plan_index, plan in enumerate(plans):
+            event_index = _render_plan_event_images(
+                plan,
+                temporary,
+                event_directory,
+                plan_index=plan_index,
+                first_event_index=event_index,
+            )
+            for event in plan.events:
+                plan_tick_scale = timescale // plan.output_time_base.denominator
+                ticks.append(next_clip_tick + event.output_tick * plan_tick_scale)
+            next_clip_tick = ticks[-1] + 1
+
+        if ticks[-1] > MAX_EXACT_FILTER_TICK:
+            raise ValueError("compilation ticks exceed the renderer's exact range")
+
+        _encode_event_images(event_directory, ticks, timescale, output)
+    return output
