@@ -294,6 +294,54 @@ class RenderPlanTests(unittest.TestCase):
                 artifact=ArtifactRequest(Path("comparison.mp4")),
             )
 
+    def test_fails_instead_of_shrinking_the_required_crop_margin(self) -> None:
+        with self.assertRaisesRegex(ValueError, "25% margin"):
+            prepare_source_window(
+                self.windows.user[0],
+                (PlayerObservation(0, Rectangle(0, 0, 960, 900)),),
+            )
+
+    def test_fails_instead_of_merging_distinct_frames_with_equal_pts(self) -> None:
+        user = prepare_source_window(
+            self.windows.user[0],
+            (PlayerObservation(0, Rectangle(200, 100, 160, 180)),),
+        )
+        pro = prepare_source_window(
+            self.windows.pro,
+            (PlayerObservation(0, Rectangle(200, 100, 160, 180)),),
+        )
+        first_change = user.window.normalized_frames[1]
+        duplicate_pts_frame = DecodedFrame(
+            first_change.frame.stream_index,
+            999,
+            first_change.frame.pts,
+            first_change.frame.time_base,
+        )
+        duplicate_window = type(user.window)(
+            source=user.window.source,
+            swing_ordinal=user.window.swing_ordinal,
+            contact_timestamp=user.window.contact_timestamp,
+            contact_frame=user.window.contact_frame,
+            normalized_frames=(
+                *user.window.normalized_frames[:2],
+                type(first_change)(duplicate_pts_frame, first_change.offset),
+                *user.window.normalized_frames[2:],
+            ),
+        )
+        duplicate_user = type(user)(
+            window=duplicate_window,
+            observations=user.observations,
+            crop=user.crop,
+        )
+
+        with self.assertRaisesRegex(UnrepresentableTimeline, "same normalized time"):
+            build_render_plan(
+                user=duplicate_user,
+                pro=pro,
+                slow_motion=Fraction(1),
+                artifact=ArtifactRequest(Path("comparison.mp4")),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

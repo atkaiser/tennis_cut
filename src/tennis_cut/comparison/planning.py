@@ -14,6 +14,7 @@ from .policy import COMPARISON_POLICY, ComparisonPolicy
 from .pro_selection import DecodedFrame, InspectedMedia, ProSelection
 
 MAX_OUTPUT_TIMESCALE = 2_147_483_647
+MAX_EXACT_FILTER_TICK = 2**53
 
 
 class UnrepresentableTimeline(ValueError):
@@ -270,16 +271,14 @@ def _fixed_crop(
     expanded_width = ceil(envelope_width * (1 + policy.crop_margin))
     expanded_height = ceil(envelope_height * (1 + policy.crop_margin))
     aspect_width, aspect_height = policy.panel_aspect
-    units = max(
+    aspect_scale = max(
         ceil(Fraction(expanded_width, aspect_width)),
         ceil(Fraction(expanded_height, aspect_height)),
     )
-    maximum_units = min(source.width // aspect_width, source.height // aspect_height)
-    units = min(units, maximum_units)
-    crop_width = units * aspect_width
-    crop_height = units * aspect_height
-    if crop_width < envelope_width or crop_height < envelope_height:
-        raise ValueError("player envelope cannot fit an 8:9 crop inside the source")
+    crop_width = aspect_scale * aspect_width
+    crop_height = aspect_scale * aspect_height
+    if crop_width > source.width or crop_height > source.height:
+        raise ValueError("8:9 crop with 25% margin cannot fit inside the source")
 
     center_x = Fraction(left + right, 2)
     center_y = Fraction(top + bottom, 2)
@@ -344,6 +343,15 @@ def build_render_plan(
 
     if not 0 < slow_motion <= 1:
         raise ValueError("slow motion must be greater than zero and at most one")
+    for prepared in (user, pro):
+        offsets: dict[Fraction, DecodedFrame] = {}
+        for normalized_frame in prepared.window.normalized_frames:
+            previous = offsets.get(normalized_frame.offset)
+            if previous is not None and previous != normalized_frame.frame:
+                raise UnrepresentableTimeline(
+                    "distinct source frames occupy the same normalized time"
+                )
+            offsets[normalized_frame.offset] = normalized_frame.frame
     normalized_start = -policy.pre_contact
     normalized_end = policy.post_contact
     event_times = {
@@ -388,6 +396,10 @@ def build_render_plan(
     )
     if len({event.output_tick for event in events}) != len(events):
         raise UnrepresentableTimeline("distinct comparison events merged into one tick")
+    if events[-1].output_tick > MAX_EXACT_FILTER_TICK:
+        raise UnrepresentableTimeline(
+            "comparison event ticks exceed the renderer's exact integer range"
+        )
 
     output_width, output_height = policy.output_size
     panel_width = output_width // 2

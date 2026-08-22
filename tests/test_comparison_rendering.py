@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+from typing import Literal
 import unittest
 
 from PIL import Image, ImageDraw, ImageStat
@@ -48,7 +49,7 @@ def create_source(
     frame_count: int,
     rate: int,
     timescale: int,
-    role: str,
+    role: Literal["user", "pro"],
 ) -> Path:
     frames = directory / f"{name}_frames"
     frames.mkdir()

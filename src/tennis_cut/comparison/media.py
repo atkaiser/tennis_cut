@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, localcontext
 from fractions import Fraction
 import json
 from pathlib import Path
@@ -22,53 +21,7 @@ from .planning import (
 from .pro_selection import DecodedFrame, InspectedMedia
 
 
-def inspect_media(video: Path) -> InspectedMedia:
-    """Inspect ordered decoded video frames without FPS-based reconstruction."""
-
-    completed = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_streams",
-            "-show_frames",
-            "-show_entries",
-            "stream=index,time_base:frame=stream_index,pts",
-            "-of",
-            "json",
-            str(video),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(completed.stdout)
-    streams = payload.get("streams", [])
-    if len(streams) != 1:
-        raise ValueError("expected exactly one selected video stream")
-    stream_index = int(streams[0]["index"])
-    time_base = Fraction(streams[0]["time_base"])
-    frames = tuple(
-        DecodedFrame(
-            stream_index=int(frame["stream_index"]),
-            ordinal=ordinal,
-            pts=int(frame["pts"]),
-            time_base=time_base,
-        )
-        for ordinal, frame in enumerate(payload.get("frames", []))
-    )
-    if not frames:
-        raise ValueError("selected video stream has no decoded frames")
-    if any(frame.stream_index != stream_index for frame in frames):
-        raise ValueError("decoded frame belongs to an unexpected stream")
-    return InspectedMedia(frames=frames)
-
-
-def inspect_comparison_source(video: Path) -> ComparisonSource:
-    """Inspect exact frames and source geometry for comparison planning."""
-
+def _inspect_video(video: Path) -> tuple[dict, InspectedMedia]:
     completed = subprocess.run(
         [
             "ffprobe",
@@ -93,8 +46,8 @@ def inspect_comparison_source(video: Path) -> ComparisonSource:
     if len(streams) != 1:
         raise ValueError("expected exactly one selected video stream")
     stream = streams[0]
-    time_base = Fraction(stream["time_base"])
     stream_index = int(stream["index"])
+    time_base = Fraction(stream["time_base"])
     frames = tuple(
         DecodedFrame(
             stream_index=int(frame["stream_index"]),
@@ -108,11 +61,25 @@ def inspect_comparison_source(video: Path) -> ComparisonSource:
         raise ValueError("selected video stream has no decoded frames")
     if any(frame.stream_index != stream_index for frame in frames):
         raise ValueError("decoded frame belongs to an unexpected stream")
+    return stream, InspectedMedia(frames)
+
+
+def inspect_media(video: Path) -> InspectedMedia:
+    """Inspect ordered decoded video frames without FPS-based reconstruction."""
+
+    _, inspected_media = _inspect_video(video)
+    return inspected_media
+
+
+def inspect_comparison_source(video: Path) -> ComparisonSource:
+    """Inspect exact frames and source geometry for comparison planning."""
+
+    stream, inspected_media = _inspect_video(video)
     return ComparisonSource(
         path=video,
         width=int(stream["width"]),
         height=int(stream["height"]),
-        inspected_media=InspectedMedia(frames),
+        inspected_media=inspected_media,
     )
 
 
@@ -190,12 +157,6 @@ def _render_panel(image_path: Path, crop: Rectangle, panel: Rectangle) -> Image.
         ).convert("RGB")
 
 
-def _decimal_seconds(value: Fraction) -> str:
-    with localcontext() as context:
-        context.prec = 40
-        return format(Decimal(value.numerator) / Decimal(value.denominator), "f")
-
-
 def render_comparison(plan: ComparisonRenderPlan) -> Path:
     """Render one planned silent, fixed-crop comparison clip."""
 
@@ -219,7 +180,6 @@ def render_comparison(plan: ComparisonRenderPlan) -> Path:
             pro_directory,
         )
 
-        event_paths: list[Path] = []
         for index, event in enumerate(plan.events):
             canvas = Image.new(
                 "RGB",
@@ -240,34 +200,26 @@ def render_comparison(plan: ComparisonRenderPlan) -> Path:
             canvas.paste(pro_panel, plan.layout.pro_panel.x_y)
             event_path = event_directory / f"event_{index:09d}.png"
             canvas.save(event_path)
-            event_paths.append(event_path)
 
-        concat_lines = ["ffconcat version 1.0"]
-        for index, event_path in enumerate(event_paths):
-            concat_lines.append(f"file '{event_path}'")
-            if index + 1 < len(plan.events):
-                tick_duration = (
-                    plan.events[index + 1].output_tick - plan.events[index].output_tick
-                )
-                duration = tick_duration * plan.output_time_base
-                concat_lines.append(f"duration {_decimal_seconds(duration)}")
-        concat_path = temporary / "events.ffconcat"
-        concat_path.write_text("\n".join(concat_lines) + "\n", encoding="utf-8")
         timescale = plan.output_time_base.denominator
+        tick_expression = "+".join(
+            f"{event.output_tick}*eq(N\\,{index})"
+            for index, event in enumerate(plan.events)
+        )
         subprocess.run(
             [
                 "ffmpeg",
                 "-v",
                 "error",
-                "-r",
-                str(timescale),
-                "-f",
-                "concat",
-                "-safe",
+                "-framerate",
+                "1",
+                "-start_number",
                 "0",
                 "-i",
-                str(concat_path),
+                str(event_directory / "event_%09d.png"),
                 "-an",
+                "-vf",
+                f"settb=expr=1/{timescale},setpts={tick_expression}",
                 "-fps_mode",
                 "vfr",
                 "-c:v",
