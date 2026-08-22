@@ -56,6 +56,13 @@ class ProPickerInteractionTests(unittest.TestCase):
             confirm = dialog.findChild(QPushButton, "confirm")
             self.assertIsNotNone(image.pixmap())
             self.assertGreaterEqual(image.pixmap().width(), 640)
+            displayed = image.pixmap().toImage()
+            self.assertEqual(
+                displayed.pixelColor(
+                    displayed.width() // 2, displayed.height() // 2
+                ).red(),
+                30,
+            )
             self.assertIn("ordinal: 30", status.text())
             self.assertIn("PTS: 115", status.text())
             self.assertIn("time base: 1/10", status.text())
@@ -68,6 +75,13 @@ class ProPickerInteractionTests(unittest.TestCase):
                 "navigate_forward_1",
             ):
                 QTest.mouseClick(dialog.findChild(QPushButton, name), Qt.LeftButton)
+            displayed = image.pixmap().toImage()
+            self.assertEqual(
+                displayed.pixelColor(
+                    displayed.width() // 2, displayed.height() // 2
+                ).red(),
+                10,
+            )
             QTest.mouseClick(
                 dialog.findChild(QPushButton, "shot_forehand"), Qt.LeftButton
             )
@@ -75,6 +89,13 @@ class ProPickerInteractionTests(unittest.TestCase):
             self.assertIn("missing before: 7/10", status.text())
             QTest.mouseClick(
                 dialog.findChild(QPushButton, "navigate_forward_10"), Qt.LeftButton
+            )
+            displayed = image.pixmap().toImage()
+            self.assertEqual(
+                displayed.pixelColor(
+                    displayed.width() // 2, displayed.height() // 2
+                ).red(),
+                30,
             )
             for shot_type in ("backhand", "volley", "serve"):
                 QTest.mouseClick(

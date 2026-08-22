@@ -46,8 +46,7 @@ If I want to label more videos follow this pipline:
 
 ## Comparing videos
 
-After saving a pro contact-frame selection beside the pro video, produce a
-silent contact-aligned comparison compilation with:
+Produce a silent contact-aligned comparison compilation with:
 
 ```bash
 tennis-compare USER_VIDEO PRO_VIDEO --pro-speed FACTOR
@@ -56,6 +55,12 @@ tennis-compare USER_VIDEO PRO_VIDEO --pro-speed FACTOR
 `FACTOR` describes the pro video's published speed (`1.0` for real time or
 `0.25` for quarter speed). Use `--slowmo`, `--output-dir`, and `--clips` to
 override the playback factor, destination, or optional comparison clip output.
+
+When the pro video has no reusable contact-frame selection, the command opens
+a paused exact-frame picker. Use the on-screen controls or `A/S/F/V` to move
+`-10/-1/+1/+10` frames, `D/W/E/R` to choose forehand/backhand/volley/serve,
+`Z` to confirm, or `Q` to cancel. Confirmation saves a source-bound selection
+beside the pro video for future runs; unchanged sources bypass the picker.
 
 
 ## Linting
