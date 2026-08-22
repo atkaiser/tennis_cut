@@ -661,12 +661,6 @@ class CompareVideosTests(unittest.TestCase):
                     self.cleanup_calls = 0
                     staging_paths.append(Path(self.name))
 
-                def __enter__(self) -> str:
-                    return self.name
-
-                def __exit__(self, exc_type, exc, traceback) -> None:
-                    self.cleanup()
-
                 def cleanup(self) -> None:
                     self.cleanup_calls += 1
                     if self.cleanup_calls == 1:
