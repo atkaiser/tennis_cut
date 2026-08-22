@@ -18,10 +18,12 @@ from tennis_cut.swing_detection import (
     DetectionConfig,
 )
 
+from .media import PlayerLocator
 from .planning import (
     ArtifactRequest,
     ComparisonRenderPlan,
     ComparisonSource,
+    PlayerObservation,
     SelectedSourceWindow,
     build_render_plan,
     prepare_source_window,
@@ -92,9 +94,12 @@ class ComparisonSelectionCancelled(RuntimeError):
 class ComparisonProcessingFailed(RuntimeError):
     """A runtime stage failed after semantic preflight."""
 
-    def __init__(self, stage: str, message: str) -> None:
+    def __init__(
+        self, stage: str, message: str, *, diagnostics: str | None = None
+    ) -> None:
         self.stage = stage
         self.message = message
+        self.diagnostics = diagnostics
         super().__init__(f"{stage} failed: {message}")
 
 
@@ -116,9 +121,11 @@ class ComparisonDependencies(Protocol):
 
     def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]: ...
 
-    def create_player_locator(self, device: str | None): ...
+    def create_player_locator(self, device: str | None) -> PlayerLocator: ...
 
-    def observe_players(self, window: SelectedSourceWindow, locator): ...
+    def observe_players(
+        self, window: SelectedSourceWindow, locator: PlayerLocator
+    ) -> tuple[PlayerObservation, ...]: ...
 
     def render_artifacts(
         self,
@@ -172,7 +179,7 @@ class SystemComparisonDependencies:
 
         return detect_user_swings(request.user_video, request.detection_config)
 
-    def create_player_locator(self, device: str | None):
+    def create_player_locator(self, device: str | None) -> PlayerLocator:
         import torch
         from utilities import PersonDetector
 
@@ -186,7 +193,9 @@ class SystemComparisonDependencies:
                 selected_device = "cpu"
         return PersonDetector(selected_device)
 
-    def observe_players(self, window: SelectedSourceWindow, locator):
+    def observe_players(
+        self, window: SelectedSourceWindow, locator: PlayerLocator
+    ) -> tuple[PlayerObservation, ...]:
         from .media import observe_players
 
         return observe_players(window, locator)
@@ -378,7 +387,11 @@ def compare_videos(
                 tuple(plans), staged_primary, staged_clips
             )
         except Exception as error:
-            raise ComparisonProcessingFailed("comparison rendering", str(error)) from error
+            raise ComparisonProcessingFailed(
+                "comparison rendering",
+                str(error),
+                diagnostics=getattr(error, "diagnostics", None),
+            ) from error
 
         published = _publish_artifacts(
             staged_primary=staged_primary,

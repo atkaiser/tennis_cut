@@ -60,7 +60,7 @@ def _configure_logging(*, verbose: bool, quiet: bool) -> None:
     level = logging.INFO if verbose else logging.WARNING
     if quiet:
         level = logging.ERROR
-    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
+    logging.basicConfig(level=level, format="%(levelname)s: %(message)s", force=True)
 
 
 def main(
@@ -89,7 +89,12 @@ def main(
     except InvalidComparisonRequest as error:
         print(f"tennis-compare: {error}", file=sys.stderr)
         return 2
-    except (ComparisonSelectionCancelled, ComparisonProcessingFailed) as error:
+    except ComparisonSelectionCancelled as error:
+        print(f"tennis-compare: {error}", file=sys.stderr)
+        return 1
+    except ComparisonProcessingFailed as error:
+        if args.verbose and error.diagnostics:
+            logging.error(error.diagnostics)
         print(f"tennis-compare: {error}", file=sys.stderr)
         return 1
     except Exception as error:

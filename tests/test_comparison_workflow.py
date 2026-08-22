@@ -6,19 +6,26 @@ import tempfile
 import unittest
 
 from tennis_cut.comparison import ComparisonRequest, ComparisonResult, compare_videos
-from tennis_cut.comparison.planning import ComparisonSource
-from tennis_cut.comparison.planning import PlayerObservation, Rectangle
+from tennis_cut.comparison.planning import (
+    ComparisonRenderPlan,
+    ComparisonSource,
+    PlayerObservation,
+    Rectangle,
+    SelectedSourceWindow,
+)
 from tennis_cut.comparison.pro_selection import (
     DecodedFrame,
     InspectedMedia,
     ProSelection,
     SelectionCancelled,
+    SelectionProcessingFailure,
 )
 from tennis_cut.comparison.workflow import (
     ComparisonProcessingFailed,
     ComparisonSelectionCancelled,
     OutputCollision,
 )
+from tennis_cut.swing_detection import DetectedSwing
 
 
 def comparison_source(path: Path) -> ComparisonSource:
@@ -27,6 +34,19 @@ def comparison_source(path: Path) -> ComparisonSource:
         for ordinal in range(31)
     )
     return ComparisonSource(path, 1920, 1080, InspectedMedia(frames))
+
+
+def comparison_files(
+    directory: Path, *, user_name: str = "user.mov"
+) -> tuple[Path, Path, tuple[Path, Path, Path]]:
+    user_video = directory / user_name
+    pro_video = directory / "pro.mov"
+    user_video.write_bytes(b"user source")
+    pro_video.write_bytes(b"pro source")
+    models = tuple(directory / name for name in ("audio", "shot", "type"))
+    for model in models:
+        model.touch()
+    return user_video, pro_video, models
 
 
 class ZeroComparisonDependencies:
@@ -54,17 +74,24 @@ class ZeroComparisonDependencies:
         self.events.append("select")
         return ProSelection(pro_video, inspected_media.frames[15], "forehand")
 
-    def detect_swings(self, request: ComparisonRequest):
+    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
         self.events.append("detect")
         return ()
 
-    def create_player_locator(self, device: str | None):
+    def create_player_locator(self, device: str | None) -> object:
         raise AssertionError("player locator must stay lazy when nothing is emitted")
 
-    def observe_players(self, window, locator):
+    def observe_players(
+        self, window: SelectedSourceWindow, locator: object
+    ) -> tuple[PlayerObservation, ...]:
         raise AssertionError("zero comparisons must not observe players")
 
-    def render_artifacts(self, plans, primary, clips):
+    def render_artifacts(
+        self,
+        plans: tuple[ComparisonRenderPlan, ...],
+        primary: Path,
+        clips: tuple[Path, ...],
+    ) -> None:
         raise AssertionError("zero comparisons must not render artifacts")
 
 
@@ -75,25 +102,32 @@ class MatchingDependencies(ZeroComparisonDependencies):
         self.rendered_ordinals: list[int | None] = []
         self.locator_creations = 0
 
-    def detect_swings(self, request: ComparisonRequest):
-        from tennis_cut.swing_detection import DetectedSwing
-
+    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
         self.events.append("detect")
         return (
             DetectedSwing(4, Fraction(3, 2), "forehand"),
             DetectedSwing(5, Fraction(2), "backhand"),
+            DetectedSwing(6, Fraction(2), "overhead"),
+            DetectedSwing(7, Fraction(1, 2), "forehand"),
             DetectedSwing(9, Fraction(3, 2), "forehand"),
         )
 
-    def create_player_locator(self, device: str | None):
+    def create_player_locator(self, device: str | None) -> object:
         self.locator_creations += 1
         return object()
 
-    def observe_players(self, window, locator):
+    def observe_players(
+        self, window: SelectedSourceWindow, locator: object
+    ) -> tuple[PlayerObservation, ...]:
         self.observed_ordinals.append(window.swing_ordinal)
         return (PlayerObservation(0, Rectangle(400, 100, 160, 360)),)
 
-    def render_artifacts(self, plans, primary, clips):
+    def render_artifacts(
+        self,
+        plans: tuple[ComparisonRenderPlan, ...],
+        primary: Path,
+        clips: tuple[Path, ...],
+    ) -> None:
         self.rendered_ordinals = [plan.user.window.swing_ordinal for plan in plans]
         primary.parent.mkdir(parents=True, exist_ok=True)
         primary.write_bytes(b"silent compilation")
@@ -103,16 +137,40 @@ class MatchingDependencies(ZeroComparisonDependencies):
 
 
 class FailingRenderDependencies(MatchingDependencies):
-    def render_artifacts(self, plans, primary, clips):
+    def render_artifacts(
+        self,
+        plans: tuple[ComparisonRenderPlan, ...],
+        primary: Path,
+        clips: tuple[Path, ...],
+    ) -> None:
         primary.parent.mkdir(parents=True, exist_ok=True)
         primary.write_bytes(b"partial")
         raise OSError("encoder stopped")
 
 
 class CancelledSelectionDependencies(ZeroComparisonDependencies):
-    def resolve_selection(self, pro_video, pro_speed, inspected_media):
+    def resolve_selection(
+        self, pro_video: Path, pro_speed: Fraction, inspected_media: InspectedMedia
+    ) -> SelectionCancelled:
         self.events.append("select")
         return SelectionCancelled()
+
+
+class FailedSelectionDependencies(ZeroComparisonDependencies):
+    def resolve_selection(
+        self, pro_video: Path, pro_speed: Fraction, inspected_media: InspectedMedia
+    ) -> SelectionProcessingFailure:
+        return SelectionProcessingFailure("pro selection", "saved selection is invalid")
+
+
+class FailedDetectionDependencies(ZeroComparisonDependencies):
+    def resolve_selection(
+        self, pro_video: Path, pro_speed: Fraction, inspected_media: InspectedMedia
+    ) -> ProSelection:
+        return ProSelection(pro_video, inspected_media.frames[15], "forehand")
+
+    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
+        raise OSError("model could not load")
 
 
 class CompareVideosTests(unittest.TestCase):
@@ -121,24 +179,16 @@ class CompareVideosTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
-            user_video = directory / "user.mov"
-            pro_video = directory / "pro.mov"
-            user_video.write_bytes(b"user source")
-            pro_video.write_bytes(b"pro source")
-            audio_model = directory / "audio.pth"
-            shot_model = directory / "shot.pkl"
-            shot_type_model = directory / "type.pkl"
-            for model in (audio_model, shot_model, shot_type_model):
-                model.touch()
+            user_video, pro_video, models = comparison_files(directory)
             output_directory = directory / "not-created"
             request = ComparisonRequest(
                 user_video=user_video,
                 pro_video=pro_video,
                 pro_speed=Fraction(1),
                 output_directory=output_directory,
-                audio_model=audio_model,
-                shot_model=shot_model,
-                shot_type_model=shot_type_model,
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
             )
             dependencies = ZeroComparisonDependencies(user_video, pro_video)
 
@@ -156,13 +206,9 @@ class CompareVideosTests(unittest.TestCase):
     def test_matching_swings_reuse_pro_work_and_publish_in_accepted_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
-            user_video = directory / "lesson.mov"
-            pro_video = directory / "pro.mov"
-            user_video.write_bytes(b"user source")
-            pro_video.write_bytes(b"pro source")
-            models = tuple(directory / name for name in ("audio", "shot", "type"))
-            for model in models:
-                model.touch()
+            user_video, pro_video, models = comparison_files(
+                directory, user_name="lesson.mov"
+            )
             request = ComparisonRequest(
                 user_video=user_video,
                 pro_video=pro_video,
@@ -186,18 +232,12 @@ class CompareVideosTests(unittest.TestCase):
             self.assertEqual(user_video.read_bytes(), b"user source")
             self.assertEqual(pro_video.read_bytes(), b"pro source")
 
-    def test_requested_clips_are_numbered_without_gaps_and_published_together(
+    def test_requested_comparison_clips_are_numbered_and_published_together(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
-            user_video = directory / "user.mov"
-            pro_video = directory / "pro.mov"
-            user_video.touch()
-            pro_video.touch()
-            models = tuple(directory / name for name in ("audio", "shot", "type"))
-            for model in models:
-                model.touch()
+            user_video, pro_video, models = comparison_files(directory)
             request = ComparisonRequest(
                 user_video=user_video,
                 pro_video=pro_video,
@@ -232,13 +272,7 @@ class CompareVideosTests(unittest.TestCase):
     def test_render_failure_leaves_no_partial_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
-            user_video = directory / "user.mov"
-            pro_video = directory / "pro.mov"
-            user_video.write_bytes(b"user")
-            pro_video.write_bytes(b"pro")
-            models = tuple(directory / name for name in ("audio", "shot", "type"))
-            for model in models:
-                model.touch()
+            user_video, pro_video, models = comparison_files(directory)
             output_directory = directory / "outputs"
             request = ComparisonRequest(
                 user_video=user_video,
@@ -258,19 +292,13 @@ class CompareVideosTests(unittest.TestCase):
                 )
 
             self.assertFalse(output_directory.exists())
-            self.assertEqual(user_video.read_bytes(), b"user")
-            self.assertEqual(pro_video.read_bytes(), b"pro")
+            self.assertEqual(user_video.read_bytes(), b"user source")
+            self.assertEqual(pro_video.read_bytes(), b"pro source")
 
     def test_cancellation_stops_before_detection(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
-            user_video = directory / "user.mov"
-            pro_video = directory / "pro.mov"
-            user_video.touch()
-            pro_video.touch()
-            models = tuple(directory / name for name in ("audio", "shot", "type"))
-            for model in models:
-                model.touch()
+            user_video, pro_video, models = comparison_files(directory)
             request = ComparisonRequest(
                 user_video=user_video,
                 pro_video=pro_video,
@@ -289,13 +317,7 @@ class CompareVideosTests(unittest.TestCase):
     def test_preflight_reports_primary_and_clip_directory_collisions(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
-            user_video = directory / "user.mov"
-            pro_video = directory / "pro.mov"
-            user_video.touch()
-            pro_video.touch()
-            models = tuple(directory / name for name in ("audio", "shot", "type"))
-            for model in models:
-                model.touch()
+            user_video, pro_video, models = comparison_files(directory)
             output_directory = directory / "outputs"
             output_directory.mkdir()
             primary = output_directory / "user_vs_pro_slow0.0625x.mp4"
@@ -319,6 +341,35 @@ class CompareVideosTests(unittest.TestCase):
                 )
 
             self.assertEqual(raised.exception.paths, (primary, clips_directory))
+
+    def test_selection_and_detection_failures_are_typed_by_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video, pro_video, models = comparison_files(directory)
+            request = ComparisonRequest(
+                user_video=user_video,
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
+            )
+
+            cases = (
+                (
+                    FailedSelectionDependencies(user_video, pro_video),
+                    "pro selection",
+                ),
+                (
+                    FailedDetectionDependencies(user_video, pro_video),
+                    "swing detection",
+                ),
+            )
+            for dependencies, expected_stage in cases:
+                with self.subTest(stage=expected_stage):
+                    with self.assertRaises(ComparisonProcessingFailed) as raised:
+                        compare_videos(request, dependencies)
+                    self.assertEqual(raised.exception.stage, expected_stage)
 
 
 if __name__ == "__main__":

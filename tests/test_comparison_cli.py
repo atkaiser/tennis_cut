@@ -9,22 +9,30 @@ import unittest
 from unittest.mock import patch
 
 from tennis_cut.comparison.cli import build_parser, main
+from tennis_cut.comparison.media import MediaCommandFailed
 from tennis_cut.comparison.planning import (
+    ComparisonRenderPlan,
     ComparisonSource,
     PlayerObservation,
     Rectangle,
+    SelectedSourceWindow,
 )
 from tennis_cut.comparison.pro_selection import (
     DecodedFrame,
     FileSidecarStore,
     InspectedMedia,
+    PickerSession,
+    ProSelection,
+    SelectionCancelled,
+    SelectionProcessingFailure,
     resolve_pro_selection,
 )
+from tennis_cut.comparison.workflow import ComparisonRequest
 from tennis_cut.swing_detection import DetectedSwing
 
 
 class NoPicker:
-    def pick(self, session):
+    def pick(self, session: PickerSession) -> None:
         raise AssertionError("a valid saved selection must remain noninteractive")
 
 
@@ -49,7 +57,12 @@ class ValidSidecarDependencies:
     def user_has_audio(self, path: Path) -> bool:
         return True
 
-    def resolve_selection(self, pro_video, pro_speed, inspected_media):
+    def resolve_selection(
+        self,
+        pro_video: Path,
+        pro_speed: Fraction,
+        inspected_media: InspectedMedia,
+    ) -> ProSelection | SelectionCancelled | SelectionProcessingFailure:
         return resolve_pro_selection(
             pro_video=pro_video,
             pro_speed=pro_speed,
@@ -58,18 +71,35 @@ class ValidSidecarDependencies:
             picker=NoPicker(),
         )
 
-    def detect_swings(self, request):
+    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
         return (DetectedSwing(0, Fraction(3, 2), "forehand"),)
 
-    def create_player_locator(self, device):
+    def create_player_locator(self, device: str | None) -> object:
         return object()
 
-    def observe_players(self, window, locator):
+    def observe_players(
+        self, window: SelectedSourceWindow, locator: object
+    ) -> tuple[PlayerObservation, ...]:
         return (PlayerObservation(0, Rectangle(400, 100, 160, 360)),)
 
-    def render_artifacts(self, plans, primary, clips):
+    def render_artifacts(
+        self,
+        plans: tuple[ComparisonRenderPlan, ...],
+        primary: Path,
+        clips: tuple[Path, ...],
+    ) -> None:
         primary.parent.mkdir(parents=True, exist_ok=True)
         primary.write_bytes(b"compilation")
+
+
+class FailedEncoderDependencies(ValidSidecarDependencies):
+    def render_artifacts(
+        self,
+        plans: tuple[ComparisonRenderPlan, ...],
+        primary: Path,
+        clips: tuple[Path, ...],
+    ) -> None:
+        raise MediaCommandFailed("ffmpeg", 1, "raw encoder details")
 
 
 class ComparisonCliTests(unittest.TestCase):
@@ -192,6 +222,69 @@ class ComparisonCliTests(unittest.TestCase):
             self.assertEqual(primary.read_bytes(), b"compilation")
             self.assertEqual(user_video.read_bytes(), b"user")
             self.assertEqual(pro_video.read_bytes(), b"pro")
+
+    def test_encoder_diagnostics_are_verbose_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video = directory / "user.mov"
+            pro_video = directory / "pro.mov"
+            user_video.touch()
+            pro_video.touch()
+            models = tuple(directory / name for name in ("audio", "shot", "type"))
+            for model in models:
+                model.touch()
+            pro_stat = pro_video.stat()
+            pro_video.with_name(f"{pro_video.name}.tennis-compare.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "source": {
+                            "name": pro_video.name,
+                            "size_bytes": pro_stat.st_size,
+                            "mtime_ns": pro_stat.st_mtime_ns,
+                        },
+                        "video_stream": {
+                            "index": 0,
+                            "time_base": {"numerator": 1, "denominator": 10},
+                        },
+                        "contact_frame": {"ordinal": 15, "pts": 15},
+                        "shot_type": "forehand",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            base_argv = [
+                str(user_video),
+                str(pro_video),
+                "--pro-speed",
+                "1",
+                "--audio-model",
+                str(models[0]),
+                "--shot-model",
+                str(models[1]),
+                "--shot-type-model",
+                str(models[2]),
+                "--output-dir",
+                str(directory / "output"),
+            ]
+            dependencies = FailedEncoderDependencies(user_video, pro_video)
+
+            with patch("sys.stderr", new_callable=io.StringIO) as normal_stderr:
+                normal_status = main(base_argv, dependencies=dependencies)
+            with patch("sys.stderr", new_callable=io.StringIO) as verbose_stderr:
+                verbose_status = main(
+                    [*base_argv, "--verbose"], dependencies=dependencies
+                )
+
+        stable_error = (
+            "tennis-compare: comparison rendering failed: "
+            "ffmpeg exited with status 1\n"
+        )
+        self.assertEqual(normal_status, 1)
+        self.assertEqual(normal_stderr.getvalue(), stable_error)
+        self.assertEqual(verbose_status, 1)
+        self.assertIn("ERROR: raw encoder details\n", verbose_stderr.getvalue())
+        self.assertTrue(verbose_stderr.getvalue().endswith(stable_error))
 
 
 if __name__ == "__main__":

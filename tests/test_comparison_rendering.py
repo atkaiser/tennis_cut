@@ -234,7 +234,9 @@ class GeneratedMediaRenderingTests(unittest.TestCase):
             )
             self.assertEqual((sha256(user_path), sha256(pro_path)), original_hashes)
 
-    def test_compilation_encodes_ordered_clips_once_with_hard_gapless_cut(self) -> None:
+    def test_compilation_encodes_ordered_comparison_clips_once_with_hard_cut(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
             user_path = create_source(
