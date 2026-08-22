@@ -10,11 +10,9 @@ from pathlib import Path
 import tempfile
 from typing import Protocol
 
+from .policy import COMPARISON_POLICY
 
 SCHEMA_VERSION = 1
-SUPPORTED_SHOT_TYPES = frozenset({"forehand", "backhand", "volley", "serve"})
-PRE_CONTACT = Fraction(6, 5)
-POST_CONTACT = Fraction(7, 10)
 
 
 @dataclass(frozen=True)
@@ -140,11 +138,15 @@ class PickerSession:
         last_frame = self.inspected_media.frames[-1]
         available_before = (frame.timestamp - first_frame.timestamp) * self.pro_speed
         available_after = (last_frame.timestamp - frame.timestamp) * self.pro_speed
-        missing_before = max(Fraction(0), PRE_CONTACT - available_before)
-        missing_after = max(Fraction(0), POST_CONTACT - available_after)
+        missing_before = max(
+            Fraction(0), COMPARISON_POLICY.pre_contact - available_before
+        )
+        missing_after = max(
+            Fraction(0), COMPARISON_POLICY.post_contact - available_after
+        )
         return ConfirmationStatus(
             can_confirm=(
-                shot_type in SUPPORTED_SHOT_TYPES
+                shot_type in COMPARISON_POLICY.supported_shot_types
                 and missing_before == 0
                 and missing_after == 0
             ),
@@ -193,7 +195,7 @@ def _read_reusable_selection(
             or source["size_bytes"] != source_stat.st_size
             or source["mtime_ns"] != source_stat.st_mtime_ns
             or type(shot_type) is not str
-            or shot_type not in SUPPORTED_SHOT_TYPES
+            or shot_type not in COMPARISON_POLICY.supported_shot_types
             or time_base_payload["numerator"] <= 0
             or time_base_payload["denominator"] <= 0
         ):
