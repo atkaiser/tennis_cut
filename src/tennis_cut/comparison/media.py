@@ -2,17 +2,34 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from fractions import Fraction
 import json
 from pathlib import Path
 import subprocess
+import tempfile
+from typing import Protocol
 
+from PIL import Image
+
+from .planning import (
+    ComparisonRenderPlan,
+    ComparisonSource,
+    PlayerObservation,
+    Rectangle,
+    SelectedSourceWindow,
+)
 from .pro_selection import DecodedFrame, InspectedMedia
 
 
-def inspect_media(video: Path) -> InspectedMedia:
-    """Inspect ordered decoded video frames without FPS-based reconstruction."""
+@dataclass(frozen=True)
+class _InspectedVideo:
+    width: int
+    height: int
+    media: InspectedMedia
 
+
+def _inspect_video(video: Path) -> _InspectedVideo:
     completed = subprocess.run(
         [
             "ffprobe",
@@ -23,7 +40,7 @@ def inspect_media(video: Path) -> InspectedMedia:
             "-show_streams",
             "-show_frames",
             "-show_entries",
-            "stream=index,time_base:frame=stream_index,pts",
+            "stream=index,time_base,width,height:frame=stream_index,pts",
             "-of",
             "json",
             str(video),
@@ -36,8 +53,9 @@ def inspect_media(video: Path) -> InspectedMedia:
     streams = payload.get("streams", [])
     if len(streams) != 1:
         raise ValueError("expected exactly one selected video stream")
-    stream_index = int(streams[0]["index"])
-    time_base = Fraction(streams[0]["time_base"])
+    stream = streams[0]
+    stream_index = int(stream["index"])
+    time_base = Fraction(stream["time_base"])
     frames = tuple(
         DecodedFrame(
             stream_index=int(frame["stream_index"]),
@@ -51,4 +69,181 @@ def inspect_media(video: Path) -> InspectedMedia:
         raise ValueError("selected video stream has no decoded frames")
     if any(frame.stream_index != stream_index for frame in frames):
         raise ValueError("decoded frame belongs to an unexpected stream")
-    return InspectedMedia(frames=frames)
+    return _InspectedVideo(
+        width=int(stream["width"]),
+        height=int(stream["height"]),
+        media=InspectedMedia(frames),
+    )
+
+
+def inspect_media(video: Path) -> InspectedMedia:
+    """Inspect ordered decoded video frames without FPS-based reconstruction."""
+
+    return _inspect_video(video).media
+
+
+def inspect_comparison_source(video: Path) -> ComparisonSource:
+    """Inspect exact frames and source geometry for comparison planning."""
+
+    inspected = _inspect_video(video)
+    return ComparisonSource(
+        path=video,
+        width=inspected.width,
+        height=inspected.height,
+        inspected_media=inspected.media,
+    )
+
+
+class PlayerLocator(Protocol):
+    """Locate one player in an exact decoded-frame image."""
+
+    def find_box(self, image: Path, /) -> tuple[int, int, int, int] | None: ...
+
+
+def _decode_frames(
+    source: Path,
+    ordinals: tuple[int, ...],
+    output_directory: Path,
+) -> dict[int, Path]:
+    unique_ordinals = tuple(sorted(set(ordinals)))
+    if not unique_ordinals:
+        return {}
+    selection = "+".join(f"eq(n\\,{ordinal})" for ordinal in unique_ordinals)
+    output_pattern = output_directory / "frame_%09d.png"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-noautorotate",
+            "-i",
+            str(source),
+            "-map",
+            "0:v:0",
+            "-vf",
+            f"select={selection}",
+            "-fps_mode",
+            "passthrough",
+            "-start_number",
+            "0",
+            str(output_pattern),
+            "-y",
+        ],
+        check=True,
+    )
+    paths = tuple(sorted(output_directory.glob("frame_*.png")))
+    if len(paths) != len(unique_ordinals):
+        raise ValueError("failed to decode every requested source frame")
+    return dict(zip(unique_ordinals, paths))
+
+
+def observe_players(
+    window: SelectedSourceWindow,
+    locator: PlayerLocator,
+) -> tuple[PlayerObservation, ...]:
+    """Sample player bounds across every unique frame in a selected window."""
+
+    ordinals = tuple(item.frame.ordinal for item in window.normalized_frames)
+    with tempfile.TemporaryDirectory() as directory:
+        decoded = _decode_frames(window.source.path, ordinals, Path(directory))
+        observations: list[PlayerObservation] = []
+        for ordinal in sorted(decoded):
+            box = locator.find_box(decoded[ordinal])
+            if box is None:
+                continue
+            x1, y1, x2, y2 = box
+            observations.append(
+                PlayerObservation(ordinal, Rectangle(x1, y1, x2 - x1, y2 - y1))
+            )
+    return tuple(observations)
+
+
+def _render_panel(image_path: Path, crop: Rectangle, panel: Rectangle) -> Image.Image:
+    with Image.open(image_path) as image:
+        cropped = image.crop(
+            (crop.x, crop.y, crop.x + crop.width, crop.y + crop.height)
+        )
+        return cropped.resize(
+            (panel.width, panel.height), Image.Resampling.LANCZOS
+        ).convert("RGB")
+
+
+def render_comparison(plan: ComparisonRenderPlan) -> Path:
+    """Render one planned silent, fixed-crop comparison clip."""
+
+    plan.artifact.path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as directory:
+        temporary = Path(directory)
+        user_directory = temporary / "user"
+        pro_directory = temporary / "pro"
+        event_directory = temporary / "events"
+        user_directory.mkdir()
+        pro_directory.mkdir()
+        event_directory.mkdir()
+        user_frames = _decode_frames(
+            plan.user.window.source.path,
+            tuple(event.user_frame.ordinal for event in plan.events),
+            user_directory,
+        )
+        pro_frames = _decode_frames(
+            plan.pro.window.source.path,
+            tuple(event.pro_frame.ordinal for event in plan.events),
+            pro_directory,
+        )
+
+        for index, event in enumerate(plan.events):
+            canvas = Image.new(
+                "RGB",
+                (plan.layout.output.width, plan.layout.output.height),
+                "black",
+            )
+            user_panel = _render_panel(
+                user_frames[event.user_frame.ordinal],
+                plan.user.crop,
+                plan.layout.user_panel,
+            )
+            pro_panel = _render_panel(
+                pro_frames[event.pro_frame.ordinal],
+                plan.pro.crop,
+                plan.layout.pro_panel,
+            )
+            canvas.paste(user_panel, plan.layout.user_panel.x_y)
+            canvas.paste(pro_panel, plan.layout.pro_panel.x_y)
+            event_path = event_directory / f"event_{index:09d}.png"
+            canvas.save(event_path)
+
+        timescale = plan.output_time_base.denominator
+        tick_expression = "+".join(
+            f"{event.output_tick}*eq(N\\,{index})"
+            for index, event in enumerate(plan.events)
+        )
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-framerate",
+                "1",
+                "-start_number",
+                "0",
+                "-i",
+                str(event_directory / "event_%09d.png"),
+                "-an",
+                "-vf",
+                f"settb=expr=1/{timescale},setpts={tick_expression}",
+                "-fps_mode",
+                "vfr",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-enc_time_base",
+                f"1:{timescale}",
+                "-video_track_timescale",
+                str(timescale),
+                str(plan.artifact.path),
+                "-y",
+            ],
+            check=True,
+        )
+    return plan.artifact.path
