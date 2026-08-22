@@ -78,6 +78,27 @@ Ruff runs automatically on pull requests to the `main` branch via GitHub
 Actions.
 
 
+## Acceptance tests
+
+The complete comparison workflow is exercised with deterministic media generated
+during the test run; no video, audio, model, or golden-output binaries are stored
+in Git. From a clean checkout, install Python 3.11, `ffmpeg`, and `ffprobe`, then
+install the locked Python environment and run:
+
+```bash
+uv sync --locked
+QT_QPA_PLATFORM=offscreen LIBGL_ALWAYS_SOFTWARE=1 \
+  uv run python -m unittest discover -s tests -v
+```
+
+The suite is CPU-only. On headless Linux, the Qt offscreen platform also needs
+the system EGL/OpenGL, XKB, and XCB cursor runtime libraries; the acceptance
+workflow in `.github/workflows/acceptance.yml` lists the Ubuntu packages and pins the
+Python 3.11.11, FFmpeg 6.1, PySide 6.9.0, and uv versions used in CI. The
+generated-media test requires the H.264 encoder provided by the Ubuntu `ffmpeg`
+package.
+
+
 ## TODO
 
 - [ ] Update the specs

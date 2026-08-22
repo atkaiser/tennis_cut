@@ -1,0 +1,53 @@
+name: Acceptance
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CUDA_VISIBLE_DEVICES: ""
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_QPA_PLATFORM: offscreen
+      YOLO_CONFIG_DIR: /tmp/ultralytics
+      EXPECTED_FFMPEG_PREFIX: "6.1"
+      EXPECTED_PYSIDE_VERSION: "6.9.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.11"
+      - name: Install media and Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
+          ffmpeg -version
+          ffprobe -version
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.13"
+          enable-cache: false
+      - name: Install locked dependencies
+        run: uv sync --locked
+      - name: Verify pinned media and Qt versions
+        run: |
+          ffmpeg -version | grep -E "^ffmpeg version ${EXPECTED_FFMPEG_PREFIX}"
+          ffprobe -version | grep -E "^ffprobe version ${EXPECTED_FFMPEG_PREFIX}"
+          test "$(uv run python -c 'import PySide6; print(PySide6.__version__)')" = "${EXPECTED_PYSIDE_VERSION}"
+      - name: Run Ruff
+        run: uv run ruff check .
+      - name: Enforce fast fake-workflow and picker budgets
+        run: |
+          timeout 15s bash -euo pipefail -c '
+            uv run python -m unittest discover -s tests -p "test_comparison_[cw]*.py"
+            uv run python -m unittest discover -s tests -p "test_pro_picker.py"
+          '
+      - name: Run acceptance suite
+        run: timeout 135s uv run python -m unittest discover -s tests -v

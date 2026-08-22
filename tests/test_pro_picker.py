@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from fractions import Fraction
 from io import BytesIO
+import json
 import os
 from pathlib import Path
+import tempfile
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -16,9 +18,13 @@ from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton
 from tennis_cut.comparison.pro_picker import QtProPicker
 from tennis_cut.comparison.pro_selection import (
     DecodedFrame,
+    FileSidecarStore,
     InspectedMedia,
     PickerSelection,
     PickerSession,
+    ProSelection,
+    SelectionCancelled,
+    resolve_pro_selection,
 )
 
 
@@ -28,6 +34,11 @@ class IdentifiableFrameReader:
         encoded = BytesIO()
         image.save(encoded, format="PNG")
         return encoded.getvalue()
+
+
+class UnexpectedPicker:
+    def pick(self, session: PickerSession) -> None:
+        raise AssertionError("a reusable sidecar must bypass the picker")
 
 
 def picker_session() -> PickerSession:
@@ -113,9 +124,7 @@ class ProPickerInteractionTests(unittest.TestCase):
             QTest.keyClick(dialog, Qt.Key_Z)
 
         def cancel_button(dialog: QDialog) -> None:
-            QTest.mouseClick(
-                dialog.findChild(QPushButton, "cancel"), Qt.LeftButton
-            )
+            QTest.mouseClick(dialog.findChild(QPushButton, "cancel"), Qt.LeftButton)
 
         scenarios = (
             ("buttons confirm", button_confirmation, expected_confirmation),
@@ -144,6 +153,62 @@ class ProPickerInteractionTests(unittest.TestCase):
                 if interaction_errors:
                     raise interaction_errors[0]
                 self.assertEqual(result, expected)
+
+        with tempfile.TemporaryDirectory() as directory_name:
+            pro_video = Path(directory_name) / "pro.mov"
+            pro_video.write_bytes(b"pro source")
+            sidecar_store = FileSidecarStore()
+            picker = QtProPicker(pro_video, IdentifiableFrameReader())
+            interaction_errors: list[BaseException] = []
+
+            def confirm_for_sidecar() -> None:
+                dialog = QApplication.activeModalWidget()
+                assert isinstance(dialog, QDialog)
+                try:
+                    key_confirmation(dialog)
+                except BaseException as error:
+                    interaction_errors.append(error)
+                    dialog.reject()
+
+            QTimer.singleShot(0, confirm_for_sidecar)
+            saved = resolve_pro_selection(
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                inspected_media=picker_session().inspected_media,
+                sidecar_store=sidecar_store,
+                picker=picker,
+            )
+            if interaction_errors:
+                raise interaction_errors[0]
+            self.assertIsInstance(saved, ProSelection)
+            sidecar_path = pro_video.with_name(f"{pro_video.name}.tennis-compare.json")
+            self.assertEqual(
+                json.loads(sidecar_path.read_text())["contact_frame"]["ordinal"], 30
+            )
+
+            reused = resolve_pro_selection(
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                inspected_media=picker_session().inspected_media,
+                sidecar_store=sidecar_store,
+                picker=UnexpectedPicker(),
+            )
+            self.assertEqual(reused, saved)
+
+            pro_video.write_bytes(b"changed pro source")
+            stale_picker = QtProPicker(pro_video, IdentifiableFrameReader())
+            QTimer.singleShot(
+                0,
+                lambda: QTest.keyClick(QApplication.activeModalWidget(), Qt.Key_Q),
+            )
+            stale_result = resolve_pro_selection(
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                inspected_media=picker_session().inspected_media,
+                sidecar_store=sidecar_store,
+                picker=stale_picker,
+            )
+            self.assertIsInstance(stale_result, SelectionCancelled)
 
 
 if __name__ == "__main__":
