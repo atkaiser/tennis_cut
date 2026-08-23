@@ -31,6 +31,7 @@ from tennis_cut.comparison.workflow import (
     SystemComparisonDependencies,
 )
 from tennis_cut.swing_detection import DetectedSwing
+from tennis_cut.temporal_ranker import TEMPORAL_VECTOR_SIZE, TemporalRankerArtifact
 
 
 def comparison_source(path: Path) -> ComparisonSource:
@@ -218,6 +219,79 @@ class DirectRenderDependencies(MatchingDependencies):
 
 
 class CompareVideosTests(unittest.TestCase):
+    def test_unsupported_pro_shot_type_fails_before_user_detection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video, pro_video, models = comparison_files(directory)
+
+            class UnsupportedSelectionDependencies(ZeroComparisonDependencies):
+                def resolve_selection(
+                    self,
+                    pro_video: Path,
+                    pro_speed: Fraction,
+                    inspected_media: InspectedMedia,
+                ) -> ProSelection:
+                    self.events.append("select")
+                    return ProSelection(pro_video, inspected_media.frames[15], "backhand")
+
+                def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
+                    raise AssertionError("unsupported pro shot must stop before detection")
+
+            request = ComparisonRequest(
+                user_video=user_video,
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
+            )
+
+            with self.assertRaisesRegex(InvalidComparisonRequest, "unsupported pro shot type"):
+                compare_videos(request, UnsupportedSelectionDependencies(user_video, pro_video))
+
+    def test_invalid_temporal_ranker_is_rejected_before_video_inspection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video, pro_video, models = comparison_files(directory)
+            ranker_path = directory / "ranker.json"
+            ranker_path.write_text("not json")
+            request = ComparisonRequest(
+                user_video=user_video,
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
+                temporal_ranker_model=ranker_path,
+            )
+            dependencies = ZeroComparisonDependencies(user_video, pro_video)
+
+            with self.assertRaisesRegex(InvalidComparisonRequest, "invalid temporal ranker artifact"):
+                compare_videos(request, dependencies)
+            self.assertEqual(dependencies.events, [])
+
+    def test_valid_temporal_ranker_path_reaches_detection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video, pro_video, models = comparison_files(directory)
+            ranker_path = directory / "ranker.json"
+            TemporalRankerArtifact((0.0,) * TEMPORAL_VECTOR_SIZE, 0.0, "forehand").save(ranker_path)
+            request = ComparisonRequest(
+                user_video=user_video,
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
+                temporal_ranker_model=ranker_path,
+            )
+            dependencies = ZeroComparisonDependencies(user_video, pro_video)
+
+            result = compare_videos(request, dependencies)
+
+            self.assertEqual(result, ComparisonResult((), 0))
+            self.assertEqual(dependencies.events, ["inspect:user.mov", "inspect:pro.mov", "select", "detect"])
+
     def test_automatic_device_selection_prefers_mps_then_cuda_then_cpu(self) -> None:
         cases = (
             (None, True, True, "mps"),

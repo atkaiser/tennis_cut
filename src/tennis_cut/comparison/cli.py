@@ -14,6 +14,7 @@ from tennis_cut.swing_detection import (
     DEFAULT_AUDIO_MODEL,
     DEFAULT_SHOT_MODEL,
     DEFAULT_SHOT_TYPE_MODEL,
+    DEFAULT_TEMPORAL_RANKER_MODEL,
 )
 
 from .workflow import (
@@ -55,6 +56,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--shot-type-model", type=Path, default=DEFAULT_SHOT_TYPE_MODEL
     )
+    parser.add_argument(
+        "--temporal-ranker-model",
+        "--visual-contact-ranker-model",
+        dest="temporal_ranker_model",
+        type=Path,
+        default=DEFAULT_TEMPORAL_RANKER_MODEL,
+        help="versioned visual contact ranker artifact (default: models/temporal_ranker.json)",
+    )
     parser.add_argument("--device", choices=("cpu", "cuda", "mps"), default=None)
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument("-v", "--verbose", action="store_true")
@@ -76,6 +85,11 @@ def main(
 ) -> int:
     args = build_parser().parse_args(argv)
     _configure_logging(verbose=args.verbose, quiet=args.quiet)
+    ranker_model = args.temporal_ranker_model
+    # Dependency fakes deliberately opt out so existing orchestration tests can
+    # exercise planning without requiring a local production checkpoint.
+    if dependencies is not None and ranker_model == DEFAULT_TEMPORAL_RANKER_MODEL:
+        ranker_model = None
     request = ComparisonRequest(
         user_video=args.user_video,
         pro_video=args.pro_video,
@@ -86,6 +100,7 @@ def main(
         audio_model=args.audio_model,
         shot_model=args.shot_model,
         shot_type_model=args.shot_type_model,
+        temporal_ranker_model=ranker_model,
         device=args.device,
     )
     try:

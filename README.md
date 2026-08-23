@@ -83,6 +83,10 @@ The records file contains grouped camera-roll windows with each frame's seven
 evidence values; calibration holds complete groups out. Artifacts are local
 model files and should not be committed.
 
+`tennis-compare` uses `models/temporal_ranker.json` by default and validates it
+before user-video inference. Use `--visual-contact-ranker-model PATH` (or the
+`--temporal-ranker-model` alias) to select another compatible artifact.
+
 
 ## Acceptance tests
 

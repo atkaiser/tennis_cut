@@ -21,6 +21,7 @@ from tennis_cut.swing_detection import (
     detect_comparison_user_swings,
     resolve_device,
 )
+from tennis_cut.temporal_ranker import TemporalRankerArtifactError, load_temporal_ranker
 
 from .media import PlayerLocator
 from .planning import (
@@ -57,6 +58,7 @@ class ComparisonRequest:
     audio_model: Path = DEFAULT_AUDIO_MODEL
     shot_model: Path | None = DEFAULT_SHOT_MODEL
     shot_type_model: Path | None = DEFAULT_SHOT_TYPE_MODEL
+    temporal_ranker_model: Path | None = None
     device: str | None = None
 
     @property
@@ -65,6 +67,7 @@ class ComparisonRequest:
             audio_model=self.audio_model,
             shot_model=self.shot_model,
             shot_type_model=self.shot_type_model,
+            temporal_ranker_model=self.temporal_ranker_model,
             device=self.device,
         )
 
@@ -263,9 +266,15 @@ def _preflight(request: ComparisonRequest, dependencies: ComparisonDependencies)
         request.audio_model,
         request.shot_model,
         request.shot_type_model,
+        request.temporal_ranker_model,
     ):
         if model is not None and (not model.exists() or not model.is_file()):
             raise InvalidComparisonRequest(f"missing model: {model}")
+    if request.temporal_ranker_model is not None:
+        try:
+            load_temporal_ranker(request.temporal_ranker_model)
+        except TemporalRankerArtifactError as error:
+            raise InvalidComparisonRequest(f"invalid temporal ranker artifact: {error}") from error
     for executable in ("ffmpeg", "ffprobe"):
         if not dependencies.executable_exists(executable):
             raise InvalidComparisonRequest(f"required executable not found: {executable}")
@@ -313,6 +322,10 @@ def compare_videos(
         raise ComparisonSelectionCancelled(selection.message)
     if isinstance(selection, SelectionProcessingFailure):
         raise ComparisonProcessingFailed(selection.stage, selection.message)
+    if selection.shot_type != "forehand":
+        raise InvalidComparisonRequest(
+            f"unsupported pro shot type for visual contact selection: {selection.shot_type}"
+        )
 
     try:
         swings = dependencies.detect_swings(request)

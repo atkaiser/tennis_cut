@@ -37,6 +37,15 @@ class NoPicker:
         raise AssertionError("a valid saved selection must remain noninteractive")
 
 
+class ComparisonCliParserTests(unittest.TestCase):
+    def test_accepts_visual_contact_ranker_override(self) -> None:
+        args = build_parser().parse_args(
+            ["user.mov", "pro.mov", "--pro-speed", "1", "--visual-contact-ranker-model", "ranker.json"]
+        )
+
+        self.assertEqual(args.temporal_ranker_model, Path("ranker.json"))
+
+
 class ConfirmingPicker:
     def __init__(self) -> None:
         self.calls = 0

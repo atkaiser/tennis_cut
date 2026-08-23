@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from pathlib import Path
 import subprocess
 import tempfile
@@ -36,6 +37,7 @@ else:
 DEFAULT_AUDIO_MODEL = Path("models/audio_pop_logmel_large_20260512231349.pth")
 DEFAULT_SHOT_MODEL = Path("models/shot_binary_classifier_20260328143535.pkl")
 DEFAULT_SHOT_TYPE_MODEL = Path("models/shot_type_classifier_20260328220857.pkl")
+DEFAULT_TEMPORAL_RANKER_MODEL = Path("models/temporal_ranker.json")
 
 DEFAULT_STRIDE_S = 0.05
 SAMPLE_RATE = 48_000
@@ -74,6 +76,7 @@ class DetectionConfig:
     shot_model: Path | None = DEFAULT_SHOT_MODEL
     shot_type_model: Path | None = DEFAULT_SHOT_TYPE_MODEL
     device: str | None = None
+    temporal_ranker_model: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -398,20 +401,26 @@ def detect_comparison_user_swings(
         probe_video(user_video),
         report_progress=False,
     )
-    selector = contact_selector or StockVisualContactSelector(
-        device=detection_config.device
-    )
+    if contact_selector is None:
+        ranker = None
+        if detection_config.temporal_ranker_model is not None:
+            from .temporal_ranker import load_temporal_ranker
+
+            ranker = load_temporal_ranker(detection_config.temporal_ranker_model)
+        selector = StockVisualContactSelector(
+            device=detection_config.device,
+            ranker=ranker,
+        )
+    else:
+        selector = contact_selector
     accepted: list[DetectedSwing] = []
+    omissions: Counter[str] = Counter()
     for detail in details:
         selection = selector.select(
             user_video, _exact_contact_timestamp(detail.legacy_contact)
         )
         if selection.frame is None:
-            _LOG.info(
-                "Omitting swing %d: %s",
-                detail.swing.ordinal,
-                selection.omission_reason or "visual contact unavailable",
-            )
+            omissions[selection.omission_reason or "visual contact unavailable"] += 1
             continue
         accepted.append(
             DetectedSwing(
@@ -421,6 +430,10 @@ def detect_comparison_user_swings(
                 contact_frame=selection.frame.evidence.identity,
             )
         )
+    if omissions:
+        _LOG.info("visual contact omissions: %s", ", ".join(
+            f"{reason}={count}" for reason, count in sorted(omissions.items())
+        ))
     return tuple(accepted)
 
 

@@ -257,6 +257,45 @@ class DetectUserSwingsTests(unittest.TestCase):
             ),
         )
 
+    def test_comparison_loads_configured_ranker_into_stock_selector(self) -> None:
+        source = Path("user.mp4")
+        details = (
+            LegacySwingDetails(
+                DetectedSwing(0, Fraction(1), "forehand"),
+                1.0,
+                0.0,
+                2.0,
+                (0, 0, 1, 1),
+            ),
+        )
+        ranker = Mock()
+        selector = Mock()
+        selector.select.return_value = ContactSelection(
+            VisualFrame(FrameEvidence(17, Fraction(17, 120), ())),
+            0.9,
+            (17,),
+            None,
+        )
+        ranker_path = Path("models/temporal_ranker.json")
+
+        with (
+            patch(
+                "tennis_cut.swing_detection._detect_user_swings_with_details",
+                return_value=details,
+            ),
+            patch("tennis_cut.swing_detection.probe_video", return_value={"resolution": (1920, 1080)}),
+            patch("tennis_cut.swing_detection.StockVisualContactSelector", return_value=selector) as selector_type,
+            patch("tennis_cut.temporal_ranker.load_temporal_ranker", return_value=ranker) as load_ranker,
+        ):
+            swings = detect_comparison_user_swings(
+                source,
+                DetectionConfig(temporal_ranker_model=ranker_path),
+            )
+
+        load_ranker.assert_called_once_with(ranker_path)
+        selector_type.assert_called_once_with(device=None, ranker=ranker)
+        self.assertEqual(swings[0].contact_timestamp, Fraction(17, 120))
+
 
 if __name__ == "__main__":
     unittest.main()
