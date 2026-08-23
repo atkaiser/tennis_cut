@@ -258,7 +258,7 @@ class RenderPlanTests(unittest.TestCase):
         )
         self.assertGreater(pro_holds, 0)
 
-    def test_fails_when_distinct_events_exceed_target_timescale(self) -> None:
+    def test_rounds_vfr_events_onto_constant_output_timeline(self) -> None:
         user = prepare_source_window(
             self.windows.user[0],
             (PlayerObservation(0, Rectangle(200, 100, 160, 180)),),
@@ -286,13 +286,17 @@ class RenderPlanTests(unittest.TestCase):
             crop=user.crop,
         )
 
-        with self.assertRaises(UnrepresentableTimeline):
-            build_render_plan(
-                user=impossible_user,
-                pro=pro,
-                slow_motion=Fraction(1),
-                artifact=ArtifactRequest(Path("comparison.mp4")),
-            )
+        plan = build_render_plan(
+            user=impossible_user,
+            pro=pro,
+            slow_motion=Fraction(1),
+            artifact=ArtifactRequest(Path("comparison.mp4")),
+        )
+
+        self.assertEqual(plan.output_time_base, Fraction(1, 60))
+        self.assertEqual(
+            len({event.output_tick for event in plan.events}), len(plan.events)
+        )
 
     def test_fails_instead_of_shrinking_the_required_crop_margin(self) -> None:
         with self.assertRaisesRegex(ValueError, "25% margin"):

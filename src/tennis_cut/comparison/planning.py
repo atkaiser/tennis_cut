@@ -346,13 +346,20 @@ def _output_time_base(
     normalized_start: Fraction,
     slow_motion: Fraction,
 ) -> Fraction:
-    for event_time in event_times:
-        output_time = (event_time - normalized_start) / slow_motion
-        if (output_time * COMPARISON_OUTPUT_FPS).denominator != 1:
-            raise UnrepresentableTimeline(
-                "comparison events cannot be represented at constant 60 fps"
-            )
+    del event_times, normalized_start, slow_motion
     return Fraction(1, COMPARISON_OUTPUT_FPS)
+
+
+def _constant_output_tick(
+    event_time: Fraction,
+    *,
+    normalized_start: Fraction,
+    slow_motion: Fraction,
+) -> int:
+    """Round a source event onto the fixed 60-fps output timeline."""
+
+    output_time = (event_time - normalized_start) / slow_motion
+    return int(output_time * COMPARISON_OUTPUT_FPS + Fraction(1, 2))
 
 
 def build_render_plan(
@@ -399,12 +406,16 @@ def build_render_plan(
         normalized_start=normalized_start,
         slow_motion=slow_motion,
     )
-    events = tuple(
-        RenderEvent(
+    events_by_tick: dict[int, RenderEvent] = {}
+    for event_time in ordered_times:
+        output_tick = _constant_output_tick(
+            event_time,
+            normalized_start=normalized_start,
+            slow_motion=slow_motion,
+        )
+        event = RenderEvent(
             normalized_time=event_time,
-            output_tick=int(
-                ((event_time - normalized_start) / slow_motion) / time_base
-            ),
+            output_tick=output_tick,
             user_frame=(
                 user.window.contact_frame
                 if event_time == 0
@@ -416,10 +427,13 @@ def build_render_plan(
                 else _frame_active_at(pro.window.normalized_frames, event_time)
             ),
         )
-        for event_time in ordered_times
-    )
-    if len({event.output_tick for event in events}) != len(events):
-        raise UnrepresentableTimeline("distinct comparison events merged into one tick")
+        previous = events_by_tick.get(output_tick)
+        # Contact is the alignment anchor. If a neighboring VFR event rounds
+        # onto the same output tick, preserve the explicitly selected contact
+        # frames rather than allowing a later source frame to replace them.
+        if previous is None or previous.normalized_time != 0 or event_time == 0:
+            events_by_tick[output_tick] = event
+    events = tuple(events_by_tick[tick] for tick in sorted(events_by_tick))
     if events[-1].output_tick > MAX_EXACT_FILTER_TICK:
         raise UnrepresentableTimeline(
             "comparison event ticks exceed the renderer's exact integer range"
