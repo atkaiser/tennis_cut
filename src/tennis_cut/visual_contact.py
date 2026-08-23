@@ -475,6 +475,12 @@ def rank_contact_frames(frames: tuple[VisualFrame, ...]) -> DeterministicSelecti
     return _rank_prepared_frames(_prepare_frames(frames))
 
 
+def extract_temporal_features(frames: tuple[VisualFrame, ...]) -> tuple[TemporalFeatures, ...]:
+    """Build the seven versioned evidence values for each decoded frame."""
+
+    return _feature_rows(_prepare_frames(frames))
+
+
 class DeterministicTemporalRanker:
     """Temporary corroborator used until a trained artifact is supplied."""
 
@@ -511,7 +517,10 @@ def select_contact_frame(
         return ContactSelection(None, 0.0, (), "temporal ranker selected unknown frame")
     if abs(prediction.frame_ordinal - deterministic.selected_frame) > 1:
         return ContactSelection(None, 0.0, deterministic.plausible_frames, "temporal ranker disagrees")
-    if prediction.confidence < getattr(ranker, "confidence_threshold", 0.0):
+    confidence = prediction.confidence
+    if prediction.frame_ordinal == deterministic.selected_frame:
+        confidence = min(1.0, confidence + getattr(ranker, "exact_agreement_bonus", 0.0))
+    if confidence < getattr(ranker, "confidence_threshold", 0.0):
         return ContactSelection(
             None,
             0.0,
@@ -522,7 +531,7 @@ def select_contact_frame(
     plausible = tuple(sorted(set(deterministic.plausible_frames) | {prediction.frame_ordinal}))
     if len(plausible) > 2 or (len(plausible) == 2 and plausible[1] != plausible[0] + 1):
         return ContactSelection(None, 0.0, plausible, "broad or separated ambiguity")
-    return ContactSelection(selected, max(0.0, min(1.0, prediction.confidence)), plausible, None)
+    return ContactSelection(selected, max(0.0, min(1.0, confidence)), plausible, None)
 
 
 class _StockVisualEvidence:
@@ -700,6 +709,7 @@ __all__ = [
     "VisualFrame",
     "VisualContactSelector",
     "StockVisualContactSelector",
+    "extract_temporal_features",
     "rank_contact_frames",
     "select_contact_frame",
 ]

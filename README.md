@@ -77,6 +77,12 @@ ruff check .
 Ruff runs automatically on pull requests to the `main` branch via GitHub
 Actions.
 
+For offline forehand contact-ranker work, run
+`tennis-temporal-ranker RECORDS.json --artifact models/temporal_ranker.json`.
+The records file contains grouped camera-roll windows with each frame's seven
+evidence values; calibration holds complete groups out. Artifacts are local
+model files and should not be committed.
+
 
 ## Acceptance tests
 

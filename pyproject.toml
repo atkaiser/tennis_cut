@@ -27,6 +27,7 @@ dependencies = [
 [project.scripts]
 tennis-cut = "tennis_cut.tennis_cut:main"
 tennis-compare = "tennis_cut.comparison.cli:main"
+tennis-temporal-ranker = "tennis_cut.evaluate_temporal_ranker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
