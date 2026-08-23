@@ -235,13 +235,13 @@ class RenderPlanTests(unittest.TestCase):
 
         self.assertEqual(plan.clip_bounds.normalized_start, Fraction(-6, 5))
         self.assertEqual(plan.clip_bounds.normalized_end, Fraction(7, 10))
-        self.assertEqual(plan.output_time_base, Fraction(1, 5))
+        self.assertEqual(plan.output_time_base, Fraction(1, 60))
         self.assertEqual(plan.events[0].normalized_time, Fraction(-6, 5))
         self.assertEqual(plan.events[-1].normalized_time, Fraction(7, 10))
         contact = next(
             event for event in plan.events if event.normalized_time == Fraction(0)
         )
-        self.assertEqual(contact.output_tick, 12)
+        self.assertEqual(contact.output_tick, 144)
         self.assertEqual(contact.user_frame, user.window.contact_frame)
         self.assertEqual(contact.pro_frame, pro.window.contact_frame)
         self.assertEqual(

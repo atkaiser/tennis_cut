@@ -296,6 +296,58 @@ class DetectUserSwingsTests(unittest.TestCase):
         selector_type.assert_called_once_with(device=None, ranker=ranker)
         self.assertEqual(swings[0].contact_timestamp, Fraction(17, 120))
 
+    def test_comparison_logs_aggregate_selector_diagnostics(self) -> None:
+        source = Path("user.mp4")
+        details = (
+            LegacySwingDetails(
+                DetectedSwing(0, Fraction(1), "forehand"),
+                1.0,
+                0.0,
+                2.0,
+                (0, 0, 1, 1),
+            ),
+            LegacySwingDetails(
+                DetectedSwing(1, Fraction(3), "forehand"),
+                3.0,
+                2.0,
+                4.0,
+                (0, 0, 1, 1),
+            ),
+        )
+        selector = Mock()
+        selector.select.side_effect = [
+            ContactSelection(
+                VisualFrame(FrameEvidence(17, Fraction(17, 120), ())),
+                0.9,
+                (17,),
+                None,
+            ),
+            ContactSelection(None, 0.0, (), "below contact confidence threshold"),
+        ]
+
+        with (
+            patch(
+                "tennis_cut.swing_detection._detect_user_swings_with_details",
+                return_value=details,
+            ),
+            patch(
+                "tennis_cut.swing_detection.probe_video",
+                return_value={"resolution": (1920, 1080)},
+            ),
+            self.assertLogs("tennis_cut.swing_detection", level="INFO") as logs,
+        ):
+            detect_comparison_user_swings(
+                source, DetectionConfig(), contact_selector=selector
+            )
+
+        self.assertTrue(
+            any(
+                "visual contact selection: candidates=2 accepted=1 omitted=1 "
+                "(below contact confidence threshold=1)" in message
+                for message in logs.output
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

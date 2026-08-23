@@ -430,10 +430,16 @@ def detect_comparison_user_swings(
                 contact_frame=selection.frame.evidence.identity,
             )
         )
-    if omissions:
-        _LOG.info("visual contact omissions: %s", ", ".join(
-            f"{reason}={count}" for reason, count in sorted(omissions.items())
-        ))
+    omission_summary = ", ".join(
+        f"{reason}={count}" for reason, count in sorted(omissions.items())
+    ) or "none"
+    _LOG.info(
+        "visual contact selection: candidates=%d accepted=%d omitted=%d (%s)",
+        len(details),
+        len(accepted),
+        sum(omissions.values()),
+        omission_summary,
+    )
     return tuple(accepted)
 
 

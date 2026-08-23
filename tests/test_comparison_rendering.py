@@ -213,7 +213,7 @@ def probe_output(video: Path) -> dict:
             "-show_streams",
             "-show_frames",
             "-show_entries",
-            "stream=codec_type,width,height,time_base,duration_ts:frame=pts",
+            "stream=codec_type,width,height,time_base,r_frame_rate,duration_ts:frame=pts",
             "-of",
             "json",
             str(video),
@@ -379,6 +379,7 @@ class GeneratedMediaRenderingTests(unittest.TestCase):
                     self.assertEqual(
                         Fraction(streams[0]["time_base"]), plans[0].output_time_base
                     )
+                    self.assertEqual(Fraction(streams[0]["r_frame_rate"]), 60)
                     expected_ticks: list[int] = []
                     expected_events = []
                     next_tick = 0

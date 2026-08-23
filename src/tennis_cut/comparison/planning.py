@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
-from math import ceil, lcm
+from math import ceil
 from pathlib import Path
 from typing import Iterable
 
@@ -16,6 +16,7 @@ from .pro_selection import DecodedFrame, InspectedMedia, ProSelection
 
 MAX_OUTPUT_TIMESCALE = 2_147_483_647
 MAX_EXACT_FILTER_TICK = 2**53
+COMPARISON_OUTPUT_FPS = 60
 
 
 class UnrepresentableTimeline(ValueError):
@@ -345,15 +346,13 @@ def _output_time_base(
     normalized_start: Fraction,
     slow_motion: Fraction,
 ) -> Fraction:
-    denominator = 1
     for event_time in event_times:
         output_time = (event_time - normalized_start) / slow_motion
-        denominator = lcm(denominator, output_time.denominator)
-        if denominator > MAX_OUTPUT_TIMESCALE:
+        if (output_time * COMPARISON_OUTPUT_FPS).denominator != 1:
             raise UnrepresentableTimeline(
-                "comparison events require an unsupported output timescale"
+                "comparison events cannot be represented at constant 60 fps"
             )
-    return Fraction(1, denominator)
+    return Fraction(1, COMPARISON_OUTPUT_FPS)
 
 
 def build_render_plan(
