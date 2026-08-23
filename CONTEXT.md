@@ -17,15 +17,19 @@ A single tennis stroke, from preparation through follow-through.
 _Avoid_: Shot, when referring to the complete motion
 
 **Contact timestamp**:
-The estimated instant in a source video when the racket contacts the ball.
+The presentation time of the contact frame selected for a swing. It is the swing's alignment anchor, not a claim that the source captured the physical instant of contact exactly.
 _Avoid_: Impact time, contact point
 
 **Contact frame**:
-The exact pro-video image selected by the user as the instant the racket contacts the ball. Its presentation time defines the pro swing's contact timestamp.
-_Avoid_: Contact point, selected timestamp
+A source image selected as the closest available representation of racket-ball contact. It is selected manually for a pro swing and automatically for a user swing, and need not depict the physical instant exactly.
+_Avoid_: Exact contact frame, contact point, selected timestamp
+
+**Contact confidence**:
+The system's confidence, based on visual evidence, that an automatically selected user contact frame is sufficiently close to contact for a useful comparison. At most two adjacent plausible contact frames are acceptable; broader or separated ambiguity is low confidence and causes the user swing to be omitted.
+_Avoid_: Swing confidence, detection confidence
 
 **Comparison clip**:
-An output video that presents two swings side by side at a shared playback speed, with their contact timestamps aligned.
+An output video that presents two swings side by side at a shared playback speed, with their independently selected contact frames aligned.
 _Avoid_: Comparison video, matched clip
 
 **Comparison compilation**:
