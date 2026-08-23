@@ -27,6 +27,7 @@ dependencies = [
 [project.scripts]
 tennis-cut = "tennis_cut.tennis_cut:main"
 tennis-compare = "tennis_cut.comparison.cli:main"
+visual-contact-prototype = "tennis_cut.comparison.visual_contact_prototype:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
