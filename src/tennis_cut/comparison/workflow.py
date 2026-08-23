@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from fractions import Fraction
+import json
 import os
 from pathlib import Path
 import shutil
@@ -59,6 +60,7 @@ class ComparisonRequest:
     shot_model: Path | None = DEFAULT_SHOT_MODEL
     shot_type_model: Path | None = DEFAULT_SHOT_TYPE_MODEL
     temporal_ranker_model: Path | None = None
+    prototype_records: Path | None = None
     device: str | None = None
 
     @property
@@ -68,6 +70,7 @@ class ComparisonRequest:
             shot_model=self.shot_model,
             shot_type_model=self.shot_type_model,
             temporal_ranker_model=self.temporal_ranker_model,
+            prototype_records=self.prototype_records,
             device=self.device,
         )
 
@@ -275,6 +278,17 @@ def _preflight(request: ComparisonRequest, dependencies: ComparisonDependencies)
             load_temporal_ranker(request.temporal_ranker_model)
         except TemporalRankerArtifactError as error:
             raise InvalidComparisonRequest(f"invalid temporal ranker artifact: {error}") from error
+    if request.prototype_records is not None:
+        if not request.prototype_records.is_file():
+            raise InvalidComparisonRequest(f"missing prototype records: {request.prototype_records}")
+        try:
+            from tennis_cut.evaluate_temporal_ranker import load_json_records
+
+            records = load_json_records(request.prototype_records)
+            if len({record.group for record in records}) < 2:
+                raise ValueError("at least two camera-roll groups are required")
+        except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
+            raise InvalidComparisonRequest(f"invalid prototype records: {error}") from error
     for executable in ("ffmpeg", "ffprobe"):
         if not dependencies.executable_exists(executable):
             raise InvalidComparisonRequest(f"required executable not found: {executable}")

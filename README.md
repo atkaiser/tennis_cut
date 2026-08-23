@@ -86,8 +86,20 @@ model files and should not be committed.
 `tennis-compare` uses `models/temporal_ranker.json` by default and validates it
 before user-video inference. Use `--visual-contact-ranker-model PATH` (or the
 `--temporal-ranker-model` alias) to select another compatible artifact.
-For a prototype-style run without that artifact, use `--prototype`; this uses
-the built-in deterministic corroborator and is intended for exploratory runs.
+To reproduce the original prototype's HGB temporal corroborator, provide its
+labeled pilot records explicitly:
+
+```bash
+tennis-compare USER_VIDEO PRO_VIDEO --pro-speed FACTOR \
+  --prototype --prototype-records RECORDS.json
+```
+
+`RECORDS.json` is the same grouped, frame-feature format accepted by
+`tennis-temporal-ranker`. The prototype trains in memory with grouped
+camera-roll holdouts and uses the original confidence gate. The old
+deterministic fallback is intentionally not used by `--prototype`; the pilot
+records are required because a `results.json` file does not contain the model
+features needed to reconstruct the trained estimator.
 
 
 ## Acceptance tests

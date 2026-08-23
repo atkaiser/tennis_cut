@@ -18,6 +18,8 @@ from tennis_cut.temporal_ranker import (
     all_temporal_feature_vectors,
     load_temporal_ranker,
     TemporalRankerArtifact,
+    PrototypeTemporalRanker,
+    fit_prototype_temporal_ranker,
 )
 from tennis_cut.visual_contact import TemporalFeatures, TemporalPrediction
 
@@ -108,6 +110,18 @@ class TemporalRankerTests(unittest.TestCase):
             self.assertEqual(artifact.scorer_version, 3)
             self.assertTrue((Path(directory) / "ranker.json").is_file())
             self.assertEqual(metrics.total_swings, 2)
+
+    def test_prototype_ranker_uses_grouped_hgb_and_original_bonus(self) -> None:
+        records = tuple(
+            LabeledWindow(group, 2, feature_rows(5), deterministic_frame=2)
+            for group in ("camera-a", "camera-b")
+        )
+
+        ranker = fit_prototype_temporal_ranker(records)
+
+        self.assertIsInstance(ranker, PrototypeTemporalRanker)
+        self.assertEqual(ranker.exact_agreement_bonus, 0.25)
+        self.assertIsInstance(ranker.predict(feature_rows(5)), TemporalPrediction)
 
 
 if __name__ == "__main__":
