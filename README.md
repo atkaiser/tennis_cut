@@ -86,6 +86,8 @@ model files and should not be committed.
 `tennis-compare` uses `models/temporal_ranker.json` by default and validates it
 before user-video inference. Use `--visual-contact-ranker-model PATH` (or the
 `--temporal-ranker-model` alias) to select another compatible artifact.
+For a prototype-style run without that artifact, use `--prototype`; this uses
+the built-in deterministic corroborator and is intended for exploratory runs.
 
 
 ## Acceptance tests

@@ -64,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TEMPORAL_RANKER_MODEL,
         help="versioned visual contact ranker artifact (default: models/temporal_ranker.json)",
     )
+    parser.add_argument(
+        "--prototype",
+        action="store_true",
+        help="use the built-in deterministic corroborator instead of a ranker artifact",
+    )
     parser.add_argument("--device", choices=("cpu", "cuda", "mps"), default=None)
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument("-v", "--verbose", action="store_true")
@@ -85,7 +90,7 @@ def main(
 ) -> int:
     args = build_parser().parse_args(argv)
     _configure_logging(verbose=args.verbose, quiet=args.quiet)
-    ranker_model = args.temporal_ranker_model
+    ranker_model = None if args.prototype else args.temporal_ranker_model
     # Dependency fakes deliberately opt out so existing orchestration tests can
     # exercise planning without requiring a local production checkpoint.
     if dependencies is not None and ranker_model == DEFAULT_TEMPORAL_RANKER_MODEL:

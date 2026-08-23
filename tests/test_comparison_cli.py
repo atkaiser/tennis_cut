@@ -45,6 +45,13 @@ class ComparisonCliParserTests(unittest.TestCase):
 
         self.assertEqual(args.temporal_ranker_model, Path("ranker.json"))
 
+    def test_accepts_prototype_mode_without_a_ranker_artifact(self) -> None:
+        args = build_parser().parse_args(
+            ["user.mov", "pro.mov", "--pro-speed", "1", "--prototype"]
+        )
+
+        self.assertTrue(args.prototype)
+
 
 class ConfirmingPicker:
     def __init__(self) -> None:
