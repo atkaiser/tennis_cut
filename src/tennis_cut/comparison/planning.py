@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable
 
 from tennis_cut.swing_detection import DetectedSwing
+from tennis_cut.visual_contact import SourceFrameIdentity
 
 from .policy import COMPARISON_POLICY, ComparisonPolicy
 from .pro_selection import DecodedFrame, InspectedMedia, ProSelection
@@ -174,7 +175,9 @@ def _select_source_window(
     boundary_frame = _active_frame(frames, source_start)
     contact_frame = required_contact_frame or _active_frame(frames, contact_timestamp)
     if required_contact_frame is not None and required_contact_frame not in frames:
-        raise ValueError("selected contact frame does not belong to the pro source")
+        raise ValueError("selected contact frame does not belong to the source")
+    if required_contact_frame is not None and required_contact_frame.timestamp != contact_timestamp:
+        raise ValueError("selected contact frame timestamp does not match the contact timestamp")
 
     normalized_frames = [NormalizedFrame(boundary_frame, normalized_start)]
     normalized_frames.extend(
@@ -189,6 +192,23 @@ def _select_source_window(
         contact_frame=contact_frame,
         normalized_frames=tuple(normalized_frames),
     )
+
+
+def _frame_for_identity(
+    source: ComparisonSource, identity: SourceFrameIdentity
+) -> DecodedFrame:
+    matches = tuple(
+        frame
+        for frame in source.inspected_media.frames
+        if (
+            frame.stream_index == identity.stream_index
+            and frame.pts == identity.pts
+            and frame.time_base == identity.time_base
+        )
+    )
+    if len(matches) != 1:
+        raise ValueError("selected user contact frame does not belong to the source")
+    return matches[0]
 
 
 def select_comparison_windows(
@@ -228,6 +248,11 @@ def select_comparison_windows(
             speed=Fraction(1),
             swing_ordinal=swing.ordinal,
             policy=policy,
+            required_contact_frame=(
+                _frame_for_identity(user_source, swing.contact_frame)
+                if swing.contact_frame is not None
+                else None
+            ),
         )
         if window is not None:
             user_windows.append(window)

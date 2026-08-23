@@ -18,6 +18,7 @@ from tennis_cut.swing_detection import (
     DEFAULT_SHOT_TYPE_MODEL,
     DetectedSwing,
     DetectionConfig,
+    detect_comparison_user_swings,
     resolve_device,
 )
 
@@ -171,9 +172,9 @@ class SystemComparisonDependencies:
         )
 
     def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
-        from tennis_cut.swing_detection import detect_user_swings
-
-        return detect_user_swings(request.user_video, request.detection_config)
+        return detect_comparison_user_swings(
+            request.user_video, request.detection_config
+        )
 
     def create_player_locator(self, device: str | None) -> PlayerLocator:
         from utilities import PersonDetector

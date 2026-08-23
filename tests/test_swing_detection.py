@@ -11,7 +11,15 @@ from PIL import Image
 from tennis_cut.swing_detection import (
     DetectedSwing,
     DetectionConfig,
+    LegacySwingDetails,
+    detect_comparison_user_swings,
     detect_user_swings,
+)
+from tennis_cut.visual_contact import (
+    ContactSelection,
+    FrameEvidence,
+    SourceFrameIdentity,
+    VisualFrame,
 )
 
 
@@ -178,6 +186,76 @@ class DetectUserSwingsTests(unittest.TestCase):
                 swings = detect_user_swings(source, config)
 
         self.assertEqual(swings[0].contact_timestamp, Fraction(17, 40))
+
+    def test_comparison_detection_replaces_audio_time_and_omits_visual_failures(self) -> None:
+        source = Path("user.mp4")
+        details = (
+            LegacySwingDetails(
+                DetectedSwing(0, Fraction(1), "forehand"),
+                1.0,
+                0.0,
+                2.0,
+                (0, 0, 1, 1),
+            ),
+            LegacySwingDetails(
+                DetectedSwing(1, Fraction(3), "forehand"),
+                3.0,
+                2.0,
+                4.0,
+                (0, 0, 1, 1),
+            ),
+        )
+
+        class Selector:
+            def __init__(self) -> None:
+                self.candidates: list[Fraction] = []
+
+            def select(self, _source: Path, candidate: Fraction) -> ContactSelection:
+                self.candidates.append(candidate)
+                if candidate == Fraction(3):
+                    return ContactSelection(None, 0.0, (), "weak visual evidence")
+                return ContactSelection(
+                    VisualFrame(
+                        FrameEvidence(
+                            17,
+                            Fraction(17, 120),
+                            (),
+                            3,
+                            17,
+                            Fraction(1, 120),
+                        )
+                    ),
+                    0.9,
+                    (17,),
+                    None,
+                )
+
+        selector = Selector()
+        with patch(
+            "tennis_cut.swing_detection._detect_user_swings_with_details",
+            return_value=details,
+        ), patch(
+            "tennis_cut.swing_detection.probe_video",
+            return_value={"resolution": (1920, 1080)},
+        ):
+            swings = detect_comparison_user_swings(
+                source,
+                DetectionConfig(),
+                contact_selector=selector,
+            )
+
+        self.assertEqual(selector.candidates, [Fraction(1), Fraction(3)])
+        self.assertEqual(
+            swings,
+            (
+                DetectedSwing(
+                    0,
+                    Fraction(17, 120),
+                    "forehand",
+                    SourceFrameIdentity(3, 17, Fraction(1, 120)),
+                ),
+            ),
+        )
 
 
 if __name__ == "__main__":

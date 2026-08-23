@@ -19,8 +19,18 @@ from utilities import PersonDetector, expand_box
 
 if __package__:
     from .subprocess_utils import run_command
+    from .visual_contact import (
+        SourceFrameIdentity,
+        StockVisualContactSelector,
+        VisualContactSelector,
+    )
 else:
     from subprocess_utils import run_command
+    from visual_contact import (
+        SourceFrameIdentity,
+        StockVisualContactSelector,
+        VisualContactSelector,
+    )
 
 
 DEFAULT_AUDIO_MODEL = Path("models/audio_pop_logmel_large_20260512231349.pth")
@@ -38,7 +48,12 @@ POST_CONTACT_BUFFER = 0.70
 
 _LOG = logging.getLogger(__name__)
 
-__all__ = ["DetectedSwing", "DetectionConfig", "detect_user_swings"]
+__all__ = [
+    "DetectedSwing",
+    "DetectionConfig",
+    "detect_comparison_user_swings",
+    "detect_user_swings",
+]
 
 
 @dataclass(frozen=True)
@@ -48,6 +63,7 @@ class DetectedSwing:
     ordinal: int
     contact_timestamp: Fraction
     shot_type: str | None
+    contact_frame: SourceFrameIdentity | None = None
 
 
 @dataclass(frozen=True)
@@ -361,6 +377,51 @@ def detect_user_swings(
         report_progress=False,
     )
     return tuple(detail.swing for detail in details)
+
+
+def detect_comparison_user_swings(
+    user_video: Path,
+    detection_config: DetectionConfig,
+    *,
+    contact_selector: VisualContactSelector | None = None,
+) -> tuple[DetectedSwing, ...]:
+    """Detect accepted swings and replace audio timing with visual contact.
+
+    This comparison-only operation reuses the existing audio candidate and
+    swing classification stages. Legacy callers use ``detect_user_swings`` or
+    ``detect_user_swings_for_legacy`` and therefore retain audio-derived timing.
+    """
+
+    details = _detect_user_swings_with_details(
+        user_video,
+        detection_config,
+        probe_video(user_video),
+        report_progress=False,
+    )
+    selector = contact_selector or StockVisualContactSelector(
+        device=detection_config.device
+    )
+    accepted: list[DetectedSwing] = []
+    for detail in details:
+        selection = selector.select(
+            user_video, _exact_contact_timestamp(detail.legacy_contact)
+        )
+        if selection.frame is None:
+            _LOG.info(
+                "Omitting swing %d: %s",
+                detail.swing.ordinal,
+                selection.omission_reason or "visual contact unavailable",
+            )
+            continue
+        accepted.append(
+            DetectedSwing(
+                ordinal=len(accepted),
+                contact_timestamp=selection.frame.timestamp,
+                shot_type=detail.swing.shot_type,
+                contact_frame=selection.frame.evidence.identity,
+            )
+        )
+    return tuple(accepted)
 
 
 def detect_user_swings_for_legacy(
