@@ -17,6 +17,7 @@ from .pro_selection import DecodedFrame, InspectedMedia, ProSelection
 MAX_OUTPUT_TIMESCALE = 2_147_483_647
 MAX_EXACT_FILTER_TICK = 2**53
 COMPARISON_OUTPUT_FPS = 60
+COMPARISON_OUTPUT_TIME_BASE = Fraction(1, COMPARISON_OUTPUT_FPS)
 
 
 class UnrepresentableTimeline(ValueError):
@@ -340,16 +341,6 @@ def _frame_active_at(
     return active
 
 
-def _output_time_base(
-    event_times: tuple[Fraction, ...],
-    *,
-    normalized_start: Fraction,
-    slow_motion: Fraction,
-) -> Fraction:
-    del event_times, normalized_start, slow_motion
-    return Fraction(1, COMPARISON_OUTPUT_FPS)
-
-
 def _constant_output_tick(
     event_time: Fraction,
     *,
@@ -401,11 +392,7 @@ def build_render_plan(
         ),
     }
     ordered_times = tuple(sorted(event_times))
-    time_base = _output_time_base(
-        ordered_times,
-        normalized_start=normalized_start,
-        slow_motion=slow_motion,
-    )
+    time_base = COMPARISON_OUTPUT_TIME_BASE
     events_by_tick: dict[int, RenderEvent] = {}
     for event_time in ordered_times:
         output_tick = _constant_output_tick(

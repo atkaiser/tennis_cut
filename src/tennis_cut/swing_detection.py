@@ -77,7 +77,6 @@ class DetectionConfig:
     shot_type_model: Path | None = DEFAULT_SHOT_TYPE_MODEL
     device: str | None = None
     temporal_ranker_model: Path | None = None
-    prototype_records: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -408,13 +407,6 @@ def detect_comparison_user_swings(
             from .temporal_ranker import load_temporal_ranker
 
             ranker = load_temporal_ranker(detection_config.temporal_ranker_model)
-        elif detection_config.prototype_records is not None:
-            from .evaluate_temporal_ranker import load_json_records
-            from .temporal_ranker import fit_prototype_temporal_ranker
-
-            ranker = fit_prototype_temporal_ranker(
-                load_json_records(detection_config.prototype_records)
-            )
         selector = StockVisualContactSelector(
             device=detection_config.device,
             ranker=ranker,

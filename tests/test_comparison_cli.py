@@ -45,13 +45,25 @@ class ComparisonCliParserTests(unittest.TestCase):
 
         self.assertEqual(args.temporal_ranker_model, Path("ranker.json"))
 
-    def test_accepts_prototype_mode_without_a_ranker_artifact(self) -> None:
-        args = build_parser().parse_args(
-            ["user.mov", "pro.mov", "--pro-speed", "1", "--prototype", "--prototype-records", "records.json"]
-        )
+    def test_rejects_runtime_prototype_training_options(self) -> None:
+        with (
+            patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            build_parser().parse_args(
+                [
+                    "user.mov",
+                    "pro.mov",
+                    "--pro-speed",
+                    "1",
+                    "--prototype",
+                    "--prototype-records",
+                    "records.json",
+                ]
+            )
 
-        self.assertTrue(args.prototype)
-        self.assertEqual(args.prototype_records, Path("records.json"))
+        self.assertEqual(exit_context.exception.code, 2)
+        self.assertIn("unrecognized arguments: --prototype", stderr.getvalue())
 
 
 class ConfirmingPicker:

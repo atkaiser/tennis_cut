@@ -13,7 +13,6 @@ dependencies = [
     "fasttransform>=0.0.2",
     "ffmpeg-python>=0.2.0",
     "pandas>=2.2.3",
-    "scikit-learn>=1.6.0",
     "pyqtgraph>=0.13.7",
     "pyside6>=6.9.0",
     "ruff>=0.12.0",

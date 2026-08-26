@@ -21,7 +21,6 @@ CONTEXT_RADIUS = 4
 FEATURES_PER_FRAME = 7
 TEMPORAL_VECTOR_SIZE = (CONTEXT_RADIUS * 2 + 1) * FEATURES_PER_FRAME
 EXACT_AGREEMENT_BONUS = 0.12
-PROTOTYPE_EXACT_AGREEMENT_BONUS = 0.25
 
 
 class TemporalRankerArtifactError(ValueError):
@@ -160,108 +159,6 @@ class LinearTemporalRanker:
         return TemporalPrediction(features[best].frame_ordinal, confidence)
 
 
-@dataclass
-class PrototypeTemporalRanker:
-    """The throwaway prototype's HGB temporal corroborator.
-
-    The estimator is intentionally kept in memory: prototype records are
-    labeled pilot data, not a portable production artifact.
-    """
-
-    model: object
-    operating_threshold: float
-    feature_version: int = FEATURE_VERSION
-
-    @property
-    def confidence_threshold(self) -> float:
-        return self.operating_threshold
-
-    @property
-    def exact_agreement_bonus(self) -> float:
-        return PROTOTYPE_EXACT_AGREEMENT_BONUS
-
-    def predict(self, features: tuple[TemporalFeatures, ...]) -> TemporalPrediction:
-        import numpy as np
-
-        vectors = all_temporal_feature_vectors(features)
-        scores = np.asarray(self.model.predict(np.asarray(vectors)), dtype=float)
-        best = int(np.argmax(scores))
-        local = float(scores[max(0, best - 1): min(len(scores), best + 2)].max())
-        outside = np.concatenate((scores[: max(0, best - 1)], scores[min(len(scores), best + 2):]))
-        margin = local - float(outside.max()) if len(outside) else local
-        confidence = max(0.0, min(1.0, margin))
-        return TemporalPrediction(features[best].frame_ordinal, confidence)
-
-
-def fit_prototype_temporal_ranker(records: Sequence[object]) -> PrototypeTemporalRanker:
-    """Train the original prototype model and calibrate its confidence gate."""
-
-    import numpy as np
-    from sklearn.ensemble import HistGradientBoostingRegressor
-
-    usable = tuple(records)
-    groups = sorted({str(record.group) for record in usable})
-    if len(groups) < 2:
-        raise ValueError("prototype ranker calibration requires at least two camera-roll groups")
-
-    def train(training: Sequence[object]) -> object:
-        rows: list[tuple[tuple[float, ...], float]] = []
-        for record in training:
-            vectors = all_temporal_feature_vectors(record.features)
-            label_index = next(
-                (index for index, feature in enumerate(record.features)
-                 if feature.frame_ordinal == record.label_frame),
-                None,
-            )
-            if label_index is None:
-                raise ValueError(f"prototype label frame is outside its feature window: {record.label_frame}")
-            for index in range(max(0, label_index - 12), min(len(vectors), label_index + 13)):
-                rows.append((vectors[index], math.exp(-abs(index - label_index) / 0.8)))
-        if not rows:
-            raise ValueError("cannot train prototype ranker without labeled windows")
-        model = HistGradientBoostingRegressor(
-            max_iter=160,
-            max_leaf_nodes=15,
-            l2_regularization=2,
-            random_state=7,
-        )
-        return model.fit(np.asarray([row for row, _ in rows]), np.asarray([target for _, target in rows]))
-
-    held_out_predictions: list[tuple[object, TemporalPrediction]] = []
-    for group in groups:
-        training = tuple(record for record in usable if str(record.group) != group)
-        model = train(training)
-        ranker = PrototypeTemporalRanker(model, 0.0)
-        held_out_predictions.extend(
-            (record, ranker.predict(record.features))
-            for record in usable
-            if str(record.group) == group
-        )
-
-    confidences: list[float] = []
-    correctness: list[bool] = []
-    total = sum(getattr(record, "total_swings", 1) for record in usable)
-    for record, prediction in held_out_predictions:
-        if getattr(record, "omission_reason", None) is None and (
-            record.deterministic_frame is None or abs(prediction.frame_ordinal - record.deterministic_frame) <= 1
-        ):
-            confidence = prediction.confidence
-            if record.deterministic_frame == prediction.frame_ordinal:
-                confidence = min(1.0, confidence + PROTOTYPE_EXACT_AGREEMENT_BONUS)
-            confidences.append(confidence)
-            correctness.append(abs(prediction.frame_ordinal - record.label_frame) <= 1)
-    from .evaluate_temporal_ranker import choose_operating_threshold
-
-    threshold, _, _ = choose_operating_threshold(
-        confidences,
-        lambda _: False,
-        total_swings=total,
-        minimum_precision=0.95,
-        correctness=correctness,
-    )
-    return PrototypeTemporalRanker(train(usable), threshold)
-
-
 def fit_temporal_ranker(
     samples: Iterable[tuple[Sequence[TemporalFeatures], int]],
     *,
@@ -299,17 +196,14 @@ __all__ = [
     "ARTIFACT_VERSION",
     "CONTEXT_RADIUS",
     "EXACT_AGREEMENT_BONUS",
-    "PROTOTYPE_EXACT_AGREEMENT_BONUS",
     "FEATURES_PER_FRAME",
     "SCORER_VERSION",
     "TEMPORAL_VECTOR_SIZE",
     "LinearTemporalRanker",
-    "PrototypeTemporalRanker",
     "TemporalRankerArtifact",
     "TemporalRankerArtifactError",
     "all_temporal_feature_vectors",
     "fit_temporal_ranker",
-    "fit_prototype_temporal_ranker",
     "feature_vectors_from_frames",
     "load_temporal_ranker",
     "temporal_feature_vector",

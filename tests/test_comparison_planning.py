@@ -268,26 +268,26 @@ class RenderPlanTests(unittest.TestCase):
             (PlayerObservation(0, Rectangle(200, 100, 160, 180)),),
         )
         first = user.window.normalized_frames[0]
-        impossible_offset = Fraction(-6, 5) + Fraction(1, 2_147_483_648)
-        impossible_window = type(user.window)(
+        sub_tick_offset = Fraction(-6, 5) + Fraction(1, 2_147_483_648)
+        vfr_window = type(user.window)(
             source=user.window.source,
             swing_ordinal=user.window.swing_ordinal,
             contact_timestamp=user.window.contact_timestamp,
             contact_frame=user.window.contact_frame,
             normalized_frames=(
                 first,
-                type(first)(user.window.normalized_frames[1].frame, impossible_offset),
+                type(first)(user.window.normalized_frames[1].frame, sub_tick_offset),
                 *user.window.normalized_frames[1:],
             ),
         )
-        impossible_user = type(user)(
-            window=impossible_window,
+        vfr_user = type(user)(
+            window=vfr_window,
             observations=user.observations,
             crop=user.crop,
         )
 
         plan = build_render_plan(
-            user=impossible_user,
+            user=vfr_user,
             pro=pro,
             slow_motion=Fraction(1),
             artifact=ArtifactRequest(Path("comparison.mp4")),
