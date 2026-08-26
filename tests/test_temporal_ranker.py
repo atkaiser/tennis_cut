@@ -13,6 +13,8 @@ from tennis_cut.evaluate_temporal_ranker import (
     train_and_export,
 )
 from tennis_cut.temporal_ranker import (
+    HistGradientBoostingArtifact,
+    HistGradientBoostingNode,
     TEMPORAL_VECTOR_SIZE,
     TemporalRankerArtifactError,
     all_temporal_feature_vectors,
@@ -51,6 +53,35 @@ class TemporalRankerTests(unittest.TestCase):
             with self.assertRaisesRegex(TemporalRankerArtifactError, "feature version"):
                 load_temporal_ranker(path)
 
+    def test_loader_rejects_malformed_portable_tree_indexes(self) -> None:
+        nodes = (
+            HistGradientBoostingNode(
+                0.0,
+                0,
+                0.5,
+                True,
+                1,
+                2,
+                False,
+            ),
+            HistGradientBoostingNode(0.1, 0, 0.0, False, 0, 0, True),
+            HistGradientBoostingNode(0.2, 0, 0.0, False, 0, 0, True),
+        )
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "ranker.json"
+            artifact = HistGradientBoostingArtifact(
+                0.0,
+                (nodes,),
+                "forehand",
+                0.5,
+            )
+            payload = artifact.to_dict()
+            payload["model"]["trees"][0][0][1] = TEMPORAL_VECTOR_SIZE
+            path.write_text(json.dumps(payload))
+
+            with self.assertRaisesRegex(TemporalRankerArtifactError, "tree"):
+                load_temporal_ranker(path)
+
     def test_grouped_holdouts_keep_each_camera_roll_family_whole(self) -> None:
         records = tuple(
             LabeledWindow(group, index, feature_rows())
@@ -81,6 +112,19 @@ class TemporalRankerTests(unittest.TestCase):
         self.assertEqual(metrics.included_swings, 1)
         self.assertEqual(metrics.exact_frame_precision, 1.0)
         self.assertEqual(metrics.omission_reasons, {"temporal ranker disagrees": 1, "no prediction": 1})
+
+    def test_metrics_score_the_deterministic_frame_kept_after_corroboration(self) -> None:
+        records = (
+            LabeledWindow("a", 10, feature_rows(), deterministic_frame=10),
+        )
+
+        metrics = evaluate_predictions(
+            records,
+            (TemporalPrediction(11, 0.8),),
+            threshold=0.5,
+        )
+
+        self.assertEqual(metrics.exact_frame_precision, 1.0)
 
     def test_threshold_uses_maximum_coverage_at_precision_floor(self) -> None:
         records = tuple(LabeledWindow("a", index, feature_rows(), deterministic_frame=index) for index in range(4))

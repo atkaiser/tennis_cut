@@ -29,7 +29,8 @@ from tennis_cut.comparison.pro_selection import (
     resolve_pro_selection,
 )
 from tennis_cut.comparison.workflow import ComparisonRequest
-from tennis_cut.swing_detection import DetectedSwing
+from tennis_cut.swing_detection import DEFAULT_TEMPORAL_RANKER_MODEL, DetectedSwing
+from tennis_cut.temporal_ranker import load_temporal_ranker
 
 
 class NoPicker:
@@ -38,12 +39,38 @@ class NoPicker:
 
 
 class ComparisonCliParserTests(unittest.TestCase):
-    def test_accepts_visual_contact_ranker_override(self) -> None:
-        args = build_parser().parse_args(
-            ["user.mov", "pro.mov", "--pro-speed", "1", "--visual-contact-ranker-model", "ranker.json"]
+    def test_defaults_to_bundled_visual_contact_ranker(self) -> None:
+        build_parser().parse_args(["user.mov", "pro.mov", "--pro-speed", "1"])
+
+        self.assertTrue(DEFAULT_TEMPORAL_RANKER_MODEL.is_absolute())
+        self.assertTrue(DEFAULT_TEMPORAL_RANKER_MODEL.is_file())
+        self.assertEqual(
+            load_temporal_ranker(DEFAULT_TEMPORAL_RANKER_MODEL).feature_version,
+            1,
         )
 
-        self.assertEqual(args.temporal_ranker_model, Path("ranker.json"))
+    def test_keeps_the_bundled_ranker_out_of_the_public_cli(self) -> None:
+        with (
+            patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            build_parser().parse_args(
+                [
+                    "user.mov",
+                    "pro.mov",
+                    "--pro-speed",
+                    "1",
+                    "--visual-contact-ranker-model",
+                    "ranker.json",
+                ]
+            )
+
+        self.assertEqual(exit_context.exception.code, 2)
+        self.assertIn(
+            "unrecognized arguments: --visual-contact-ranker-model",
+            stderr.getvalue(),
+        )
+        self.assertNotIn("ranker", build_parser().format_help())
 
     def test_rejects_runtime_prototype_training_options(self) -> None:
         with (

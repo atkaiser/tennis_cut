@@ -16,6 +16,7 @@ from tennis_cut.swing_detection import (
     DEFAULT_AUDIO_MODEL,
     DEFAULT_SHOT_MODEL,
     DEFAULT_SHOT_TYPE_MODEL,
+    DEFAULT_TEMPORAL_RANKER_MODEL,
     DetectedSwing,
     DetectionConfig,
     detect_comparison_user_swings,
@@ -58,7 +59,7 @@ class ComparisonRequest:
     audio_model: Path = DEFAULT_AUDIO_MODEL
     shot_model: Path | None = DEFAULT_SHOT_MODEL
     shot_type_model: Path | None = DEFAULT_SHOT_TYPE_MODEL
-    temporal_ranker_model: Path | None = None
+    temporal_ranker_model: Path | None = DEFAULT_TEMPORAL_RANKER_MODEL
     device: str | None = None
 
     @property

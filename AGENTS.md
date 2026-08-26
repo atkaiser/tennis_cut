@@ -31,7 +31,9 @@ See `Directory overview` in main README.md
 - Exclude large media/models from Git; keep artifacts under `models/` locally.
 
 ## Security & Configuration Tips
-- Avoid committing videos, wavs, or model checkpoints.
+- Keep generated videos, wavs, and model checkpoints local. Commit the compact
+  portable visual contact ranker under `src/tennis_cut/models/` as the sole
+  bundled runtime model.
 - Use `pathlib.Path` for cross‑platform paths; document new tooling in `README.md`.
 
 ## Agent skills

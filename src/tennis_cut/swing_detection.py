@@ -37,7 +37,9 @@ else:
 DEFAULT_AUDIO_MODEL = Path("models/audio_pop_logmel_large_20260512231349.pth")
 DEFAULT_SHOT_MODEL = Path("models/shot_binary_classifier_20260328143535.pkl")
 DEFAULT_SHOT_TYPE_MODEL = Path("models/shot_type_classifier_20260328220857.pkl")
-DEFAULT_TEMPORAL_RANKER_MODEL = Path("models/temporal_ranker.json")
+DEFAULT_TEMPORAL_RANKER_MODEL = (
+    Path(__file__).resolve().parent / "models" / "temporal_ranker.json"
+)
 
 DEFAULT_STRIDE_S = 0.05
 SAMPLE_RATE = 48_000
@@ -76,7 +78,7 @@ class DetectionConfig:
     shot_model: Path | None = DEFAULT_SHOT_MODEL
     shot_type_model: Path | None = DEFAULT_SHOT_TYPE_MODEL
     device: str | None = None
-    temporal_ranker_model: Path | None = None
+    temporal_ranker_model: Path | None = DEFAULT_TEMPORAL_RANKER_MODEL
 
 
 @dataclass(frozen=True)

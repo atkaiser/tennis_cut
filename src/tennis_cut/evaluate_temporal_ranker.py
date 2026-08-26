@@ -6,9 +6,16 @@ from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
-from .temporal_ranker import LinearTemporalRanker, TemporalRankerArtifact, fit_temporal_ranker
+from .temporal_ranker import (
+    HGB_EXACT_AGREEMENT_BONUS,
+    HistGradientBoostingArtifact,
+    HistGradientBoostingNode,
+    LinearTemporalRanker,
+    all_temporal_feature_vectors,
+    fit_temporal_ranker,
+)
 from .visual_contact import TemporalFeatures, TemporalPrediction
 
 
@@ -107,6 +114,8 @@ def evaluate_predictions(
     records: Sequence[LabeledWindow],
     predictions: Sequence[TemporalPrediction | None],
     threshold: float,
+    *,
+    exact_agreement_bonus: float = 0.12,
 ) -> EvaluationMetrics:
     """Calculate release-gate metrics and stable omission accounting."""
 
@@ -120,14 +129,23 @@ def evaluate_predictions(
             reason = reason or "no prediction"
         elif record.deterministic_frame is not None and abs(prediction.frame_ordinal - record.deterministic_frame) > 1:
             reason = reason or "temporal ranker disagrees"
-        elif _confidence_for(record, prediction) < threshold:
+        elif _confidence_for(record, prediction, exact_agreement_bonus) < threshold:
             reason = reason or "below operating threshold"
         if reason is None:
             included.append((record, prediction))
         else:
             omissions[reason] = omissions.get(reason, 0) + 1
-    exact = sum(prediction.frame_ordinal == record.label_frame for record, prediction in included)
-    within = sum(abs(prediction.frame_ordinal - record.label_frame) <= 1 for record, prediction in included)
+    selected_frames = tuple(
+        (
+            record.label_frame,
+            prediction.frame_ordinal
+            if record.deterministic_frame is None
+            else record.deterministic_frame,
+        )
+        for record, prediction in included
+    )
+    exact = sum(selected == label for label, selected in selected_frames)
+    within = sum(abs(selected - label) <= 1 for label, selected in selected_frames)
     total = sum(record.total_swings for record in records)
     count = len(included)
     return EvaluationMetrics(
@@ -141,10 +159,14 @@ def evaluate_predictions(
     )
 
 
-def _confidence_for(record: LabeledWindow, prediction: TemporalPrediction) -> float:
+def _confidence_for(
+    record: LabeledWindow,
+    prediction: TemporalPrediction,
+    exact_agreement_bonus: float = 0.12,
+) -> float:
     confidence = prediction.confidence
     if record.deterministic_frame == prediction.frame_ordinal:
-        confidence = min(1.0, confidence + 0.12)
+        confidence = min(1.0, confidence + exact_agreement_bonus)
     return confidence
 
 
@@ -153,6 +175,7 @@ def calibrate_threshold(
     predictions: Sequence[TemporalPrediction | None],
     *,
     minimum_precision: float = 0.95,
+    exact_agreement_bonus: float = 0.12,
 ) -> tuple[float, EvaluationMetrics]:
     """Choose a threshold from held-out predictions and return its metrics."""
 
@@ -166,7 +189,10 @@ def calibrate_threshold(
             or abs(prediction.frame_ordinal - record.deterministic_frame) <= 1
         )
     ]
-    confidences = [_confidence_for(record, prediction) for record, prediction in candidates]
+    confidences = [
+        _confidence_for(record, prediction, exact_agreement_bonus)
+        for record, prediction in candidates
+    ]
 
     threshold, points, _ = choose_operating_threshold(
         confidences,
@@ -174,11 +200,24 @@ def calibrate_threshold(
         total_swings=sum(record.total_swings for record in records),
         minimum_precision=minimum_precision,
         correctness=tuple(
-            abs(prediction.frame_ordinal - record.label_frame) <= 1
+            abs(
+                (
+                    prediction.frame_ordinal
+                    if record.deterministic_frame is None
+                    else record.deterministic_frame
+                )
+                - record.label_frame
+            )
+            <= 1
             for record, prediction in candidates
         ),
     )
-    metrics = evaluate_predictions(records, predictions, threshold)
+    metrics = evaluate_predictions(
+        records,
+        predictions,
+        threshold,
+        exact_agreement_bonus=exact_agreement_bonus,
+    )
     return threshold, EvaluationMetrics(
         metrics.total_swings,
         metrics.included_swings,
@@ -217,27 +256,134 @@ def grouped_cross_validate(
     return tuple(predictions)
 
 
+def _fit_hist_gradient_boosting(records: Sequence[LabeledWindow]) -> Any:
+    """Fit the accepted prototype estimator to labeled temporal windows."""
+
+    import numpy as np
+    from sklearn.ensemble import HistGradientBoostingRegressor
+
+    rows: list[tuple[tuple[float, ...], float]] = []
+    for record in records:
+        vectors = all_temporal_feature_vectors(record.features)
+        label_index = next(
+            (
+                index
+                for index, feature in enumerate(record.features)
+                if feature.frame_ordinal == record.label_frame
+            ),
+            None,
+        )
+        if label_index is None:
+            raise ValueError(
+                f"label frame is outside its feature window: {record.label_frame}"
+            )
+        for index in range(
+            max(0, label_index - 12), min(len(vectors), label_index + 13)
+        ):
+            rows.append(
+                (vectors[index], math.exp(-abs(index - label_index) / 0.8))
+            )
+    if not rows:
+        raise ValueError("cannot train temporal ranker without labeled windows")
+    return HistGradientBoostingRegressor(
+        max_iter=160,
+        max_leaf_nodes=15,
+        l2_regularization=2,
+        random_state=7,
+    ).fit(
+        np.asarray([values for values, _ in rows]),
+        np.asarray([target for _, target in rows]),
+    )
+
+
+def _hist_gradient_boosting_prediction(
+    model: Any,
+    features: tuple[TemporalFeatures, ...],
+) -> TemporalPrediction:
+    import numpy as np
+
+    vectors = all_temporal_feature_vectors(features)
+    scores = np.asarray(model.predict(np.asarray(vectors)), dtype=float)
+    best = int(np.argmax(scores))
+    local = float(scores[max(0, best - 1) : min(len(scores), best + 2)].max())
+    outside = np.concatenate(
+        (scores[: max(0, best - 1)], scores[min(len(scores), best + 2) :])
+    )
+    margin = local - float(outside.max()) if len(outside) else local
+    confidence = max(0.0, min(1.0, margin))
+    return TemporalPrediction(features[best].frame_ordinal, confidence)
+
+
+def grouped_cross_validate_hist_gradient_boosting(
+    records: Sequence[LabeledWindow],
+) -> tuple[TemporalPrediction | None, ...]:
+    """Reproduce the prototype's camera-family-held-out predictions."""
+
+    predictions: list[TemporalPrediction | None] = [None] * len(records)
+    positions = {id(record): index for index, record in enumerate(records)}
+    for _, training, held_out in grouped_holdout_folds(records):
+        if not training:
+            continue
+        model = _fit_hist_gradient_boosting(training)
+        for record in held_out:
+            predictions[positions[id(record)]] = (
+                None
+                if record.omission_reason is not None
+                else _hist_gradient_boosting_prediction(model, record.features)
+            )
+    return tuple(predictions)
+
+
+def _portable_hist_gradient_boosting_artifact(
+    model: Any,
+    *,
+    threshold: float,
+    supported_shot_type: str,
+) -> HistGradientBoostingArtifact:
+    trees = tuple(
+        tuple(
+            HistGradientBoostingNode(
+                float(node["value"]),
+                int(node["feature_idx"]),
+                float(node["num_threshold"]),
+                bool(node["missing_go_to_left"]),
+                int(node["left"]),
+                int(node["right"]),
+                bool(node["is_leaf"]),
+            )
+            for node in predictors[0].nodes
+        )
+        for predictors in model._predictors
+    )
+    return HistGradientBoostingArtifact(
+        baseline=float(model._baseline_prediction[0, 0]),
+        trees=trees,
+        supported_shot_type=supported_shot_type,
+        operating_threshold=threshold,
+    )
+
+
 def train_and_export(
-    records: Sequence[LabeledWindow], output: Path, *, supported_shot_type: str = "forehand"
-) -> tuple[TemporalRankerArtifact, EvaluationMetrics]:
-    """Fit on supplied records, calibrate, and export one self-describing artifact."""
+    records: Sequence[LabeledWindow],
+    output: Path,
+    *,
+    supported_shot_type: str = "forehand",
+) -> tuple[HistGradientBoostingArtifact, EvaluationMetrics]:
+    """Evaluate, fit, and export the accepted prototype ranker without pickle."""
 
     if len({record.group for record in records}) < 2:
         raise ValueError("temporal ranker calibration requires at least two camera-roll groups")
-    artifact = fit_temporal_ranker(
-        ((record.features, record.label_frame) for record in records if record.omission_reason is None),
-        supported_shot_type=supported_shot_type,
+    predictions = grouped_cross_validate_hist_gradient_boosting(records)
+    threshold, metrics = calibrate_threshold(
+        records,
+        predictions,
+        exact_agreement_bonus=HGB_EXACT_AGREEMENT_BONUS,
     )
-    predictions = grouped_cross_validate(records)
-    threshold, metrics = calibrate_threshold(records, predictions)
-    artifact = TemporalRankerArtifact(
-        artifact.weights,
-        artifact.bias,
-        artifact.supported_shot_type,
-        artifact.feature_version,
-        artifact.scorer_version,
-        threshold,
-        artifact.artifact_version,
+    model = _fit_hist_gradient_boosting(records)
+    artifact = _portable_hist_gradient_boosting_artifact(
+        model,
+        threshold=threshold,
+        supported_shot_type=supported_shot_type,
     )
     artifact.save(output)
     return artifact, metrics
