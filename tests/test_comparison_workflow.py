@@ -20,12 +20,10 @@ from tennis_cut.comparison.pro_selection import (
     DecodedFrame,
     InspectedMedia,
     ProSelection,
-    SelectionCancelled,
     SelectionProcessingFailure,
 )
 from tennis_cut.comparison.workflow import (
     ComparisonProcessingFailed,
-    ComparisonSelectionCancelled,
     InvalidComparisonRequest,
     OutputCollision,
     SystemComparisonDependencies,
@@ -76,6 +74,7 @@ class ZeroComparisonDependencies:
         pro_video: Path,
         pro_speed: Fraction,
         inspected_media: InspectedMedia,
+        detection_config: object,
     ) -> ProSelection:
         self.events.append("select")
         return ProSelection(pro_video, inspected_media.frames[15], "forehand")
@@ -104,6 +103,54 @@ class ZeroComparisonDependencies:
 
 
 class SystemDependencyProgressTests(unittest.TestCase):
+    def test_pro_contact_uses_configured_visual_finder(self) -> None:
+        dependencies = SystemComparisonDependencies()
+        source = comparison_source(Path("pro.mov"))
+        request = ComparisonRequest(
+            user_video=Path("user.mov"),
+            pro_video=source.path,
+            pro_speed=Fraction(1),
+            device="cpu",
+        )
+        ranker = object()
+        finder = object()
+        expected = ProSelection(source.path, source.inspected_media.frames[15])
+
+        with (
+            patch(
+                "tennis_cut.comparison.workflow.load_temporal_ranker",
+                return_value=ranker,
+            ) as load_ranker,
+            patch(
+                "tennis_cut.visual_contact.StockVisualContactSelector",
+                return_value=finder,
+            ) as finder_type,
+            patch(
+                "tennis_cut.comparison.pro_selection.find_pro_contact",
+                return_value=expected,
+            ) as find_contact,
+        ):
+            result = dependencies.resolve_selection(
+                source.path,
+                request.pro_speed,
+                source.inspected_media,
+                request.detection_config,
+            )
+
+        self.assertEqual(result, expected)
+        load_ranker.assert_called_once_with(request.temporal_ranker_model)
+        finder_type.assert_called_once_with(
+            device="cpu",
+            ranker=ranker,
+            frame_timeline=source.inspected_media,
+        )
+        find_contact.assert_called_once_with(
+            pro_video=source.path,
+            pro_speed=Fraction(1),
+            inspected_media=source.inspected_media,
+            finder=finder,
+        )
+
     def test_video_inspection_logs_start_and_completion(self) -> None:
         dependencies = SystemComparisonDependencies()
         source = comparison_source(Path("user.mov"))
@@ -204,24 +251,26 @@ class FailingRenderDependencies(MatchingDependencies):
         raise OSError("encoder stopped")
 
 
-class CancelledSelectionDependencies(ZeroComparisonDependencies):
-    def resolve_selection(
-        self, pro_video: Path, pro_speed: Fraction, inspected_media: InspectedMedia
-    ) -> SelectionCancelled:
-        self.events.append("select")
-        return SelectionCancelled()
-
-
 class FailedSelectionDependencies(ZeroComparisonDependencies):
     def resolve_selection(
-        self, pro_video: Path, pro_speed: Fraction, inspected_media: InspectedMedia
+        self,
+        pro_video: Path,
+        pro_speed: Fraction,
+        inspected_media: InspectedMedia,
+        detection_config: object,
     ) -> SelectionProcessingFailure:
-        return SelectionProcessingFailure("pro selection", "saved selection is invalid")
+        return SelectionProcessingFailure(
+            "pro contact detection", "visual contact unavailable"
+        )
 
 
 class FailedDetectionDependencies(ZeroComparisonDependencies):
     def resolve_selection(
-        self, pro_video: Path, pro_speed: Fraction, inspected_media: InspectedMedia
+        self,
+        pro_video: Path,
+        pro_speed: Fraction,
+        inspected_media: InspectedMedia,
+        detection_config: object,
     ) -> ProSelection:
         return ProSelection(pro_video, inspected_media.frames[15], "forehand")
 
@@ -321,6 +370,7 @@ class CompareVideosTests(unittest.TestCase):
                     pro_video: Path,
                     pro_speed: Fraction,
                     inspected_media: InspectedMedia,
+                    detection_config: object,
                 ) -> ProSelection:
                     self.events.append("select")
                     return ProSelection(pro_video, inspected_media.frames[15], "backhand")
@@ -579,27 +629,6 @@ class CompareVideosTests(unittest.TestCase):
                 )
 
             self.assertFalse(output_directory.exists())
-            self.assertEqual(user_video.read_bytes(), b"user source")
-            self.assertEqual(pro_video.read_bytes(), b"pro source")
-
-    def test_cancellation_stops_before_detection(self) -> None:
-        with tempfile.TemporaryDirectory() as directory_name:
-            directory = Path(directory_name)
-            user_video, pro_video, models = comparison_files(directory)
-            request = ComparisonRequest(
-                user_video=user_video,
-                pro_video=pro_video,
-                pro_speed=Fraction(1),
-                audio_model=models[0],
-                shot_model=models[1],
-                shot_type_model=models[2],
-            )
-            dependencies = CancelledSelectionDependencies(user_video, pro_video)
-
-            with self.assertRaises(ComparisonSelectionCancelled):
-                compare_videos(request, dependencies)
-
-            self.assertNotIn("detect", dependencies.events)
             self.assertEqual(user_video.read_bytes(), b"user source")
             self.assertEqual(pro_video.read_bytes(), b"pro source")
 
@@ -873,7 +902,7 @@ class CompareVideosTests(unittest.TestCase):
             cases = (
                 (
                     FailedSelectionDependencies(user_video, pro_video),
-                    "pro selection",
+                    "pro contact detection",
                 ),
                 (
                     FailedDetectionDependencies(user_video, pro_video),

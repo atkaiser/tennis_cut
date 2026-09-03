@@ -10,10 +10,12 @@ from unittest.mock import patch
 from PIL import Image
 
 from tennis_cut.visual_contact import (
+    ContactSelection,
     Detection,
     FEATURE_VERSION,
     FrameEvidence,
     ObjectKind,
+    StockVisualContactSelector,
     _StockVisualEvidence,
     TemporalPrediction,
     VisualFrame,
@@ -146,6 +148,52 @@ class VisualContactSelectionTests(unittest.TestCase):
 
         self.assertIsNone(result.frame)
         self.assertEqual(result.omission_reason, "below contact confidence threshold")
+
+    def test_wide_search_uses_local_windows_and_selects_highest_confidence(self) -> None:
+        class RecordingProvider:
+            calls = []
+
+            def frames_many(self, source, candidate_timestamps, radius):
+                self.calls.append((source, candidate_timestamps, radius))
+                return tuple((frame(index, ()),) for index in range(8))
+
+        provider = RecordingProvider()
+        rejected = ContactSelection(None, 0.0, (), "no moving ball evidence")
+        lower = ContactSelection(frame(100, ()), 0.7, (100,), None)
+        higher = ContactSelection(frame(200, ()), 0.9, (200,), None)
+        selections = (rejected, lower, rejected, higher, rejected, rejected, rejected, rejected)
+        selector = StockVisualContactSelector(evidence_provider=provider)
+
+        with patch(
+            "tennis_cut.visual_contact.select_contact_frame",
+            side_effect=selections,
+        ):
+            result = selector.select(
+                Path("pro.mov"),
+                Fraction(10),
+                radius=Fraction(3),
+            )
+
+        self.assertEqual(result, higher)
+        self.assertEqual(
+            provider.calls,
+            [
+                (
+                    Path("pro.mov"),
+                    (
+                        Fraction(37, 5),
+                        Fraction(41, 5),
+                        Fraction(9),
+                        Fraction(49, 5),
+                        Fraction(53, 5),
+                        Fraction(57, 5),
+                        Fraction(61, 5),
+                        Fraction(63, 5),
+                    ),
+                    Fraction(2, 5),
+                )
+            ],
+        )
 
 
 class ExactVisualFrameDecodingTests(unittest.TestCase):

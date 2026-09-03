@@ -21,11 +21,11 @@ The presentation time of the contact frame selected for a swing. It is the swing
 _Avoid_: Impact time, contact point
 
 **Contact frame**:
-A source image selected as the closest available representation of racket-ball contact. It is selected manually for a pro swing and automatically for a user swing, and need not depict the physical instant exactly.
+A source image automatically identified as the closest available representation of racket-ball contact. It need not depict the physical instant exactly.
 _Avoid_: Exact contact frame, contact point, selected timestamp
 
 **Contact confidence**:
-The system's confidence, based on visual evidence, that an automatically selected user contact frame is sufficiently close to contact for a useful comparison. At most two adjacent plausible contact frames are acceptable; broader or separated ambiguity is low confidence and causes the user swing to be omitted.
+The system's confidence, based on visual evidence, that an automatically identified contact frame is sufficiently close to contact for a useful comparison. At most two adjacent plausible contact frames are acceptable; broader or separated ambiguity is low confidence and excludes the swing from comparison.
 _Avoid_: Swing confidence, detection confidence
 
 **Comparison clip**:

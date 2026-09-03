@@ -38,10 +38,8 @@ from .planning import (
     select_comparison_windows,
 )
 from .pro_selection import (
-    FileSidecarStore,
     InspectedMedia,
     ProSelection,
-    SelectionCancelled,
     SelectionProcessingFailure,
 )
 
@@ -99,10 +97,6 @@ class OutputCollision(InvalidComparisonRequest):
         super().__init__("output already exists: " + ", ".join(map(str, paths)))
 
 
-class ComparisonSelectionCancelled(RuntimeError):
-    """The user cancelled or closed pro selection."""
-
-
 class ComparisonProcessingFailed(RuntimeError):
     """A runtime stage failed after semantic preflight."""
 
@@ -129,7 +123,8 @@ class ComparisonDependencies(Protocol):
         pro_video: Path,
         pro_speed: Fraction,
         inspected_media: InspectedMedia,
-    ) -> ProSelection | SelectionCancelled | SelectionProcessingFailure: ...
+        detection_config: DetectionConfig,
+    ) -> ProSelection | SelectionProcessingFailure: ...
 
     def detect_swings(
         self, request: ComparisonRequest, user_source: ComparisonSource
@@ -187,25 +182,33 @@ class SystemComparisonDependencies:
         pro_video: Path,
         pro_speed: Fraction,
         inspected_media: InspectedMedia,
-    ) -> ProSelection | SelectionCancelled | SelectionProcessingFailure:
-        from .media import FfmpegFrameImageReader
-        from .pro_picker import QtProPicker
-        from .pro_selection import resolve_pro_selection
+        detection_config: DetectionConfig,
+    ) -> ProSelection | SelectionProcessingFailure:
+        from tennis_cut.visual_contact import StockVisualContactSelector
 
-        _LOG.info("Resolving professional contact selection: %s", pro_video)
-        selection = resolve_pro_selection(
+        from .pro_selection import find_pro_contact
+
+        _LOG.info("Finding professional contact frame: %s", pro_video)
+        ranker = (
+            load_temporal_ranker(detection_config.temporal_ranker_model)
+            if detection_config.temporal_ranker_model is not None
+            else None
+        )
+        selection = find_pro_contact(
             pro_video=pro_video,
             pro_speed=pro_speed,
             inspected_media=inspected_media,
-            sidecar_store=FileSidecarStore(),
-            picker=QtProPicker(pro_video, FfmpegFrameImageReader()),
+            finder=StockVisualContactSelector(
+                device=detection_config.device,
+                ranker=ranker,
+                frame_timeline=inspected_media,
+            ),
         )
         if isinstance(selection, ProSelection):
             _LOG.info(
-                "Professional contact selected: frame %d at %.6fs (%s)",
+                "Professional contact found: frame %d at %.6fs",
                 selection.frame.ordinal,
                 float(selection.frame.timestamp),
-                selection.shot_type,
             )
         return selection
 
@@ -450,10 +453,11 @@ def compare_videos(
         raise InvalidComparisonRequest(f"user video has no audio: {request.user_video}")
 
     selection = dependencies.resolve_selection(
-        request.pro_video, request.pro_speed, pro_source.inspected_media
+        request.pro_video,
+        request.pro_speed,
+        pro_source.inspected_media,
+        request.detection_config,
     )
-    if isinstance(selection, SelectionCancelled):
-        raise ComparisonSelectionCancelled(selection.message)
     if isinstance(selection, SelectionProcessingFailure):
         raise ComparisonProcessingFailed(selection.stage, selection.message)
     if selection.shot_type != "forehand":

@@ -171,6 +171,7 @@ class GeneratedWorkflowDependencies:
         pro_video: Path,
         pro_speed: Fraction,
         inspected_media: InspectedMedia,
+        detection_config: object,
     ) -> ProSelection:
         self.pro_speed = pro_speed
         return ProSelection(pro_video, inspected_media.frames[25], "forehand")

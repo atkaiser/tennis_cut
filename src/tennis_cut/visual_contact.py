@@ -22,6 +22,7 @@ ObjectKind = Literal["person", "ball", "racket"]
 FEATURE_VERSION = 1
 TIE_SCORE_TOLERANCE = 1e-6
 _LOG = logging.getLogger(__name__)
+DEFAULT_VISUAL_SEARCH_RADIUS = Fraction(2, 5)
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,8 @@ class VisualContactSelector(Protocol):
         self,
         source: Path,
         candidate_timestamp: Fraction,
+        *,
+        radius: Fraction = DEFAULT_VISUAL_SEARCH_RADIUS,
     ) -> ContactSelection:
         """Select visual contact evidence near one audio candidate."""
 
@@ -911,7 +914,11 @@ class _StockVisualEvidence:
                     detected_kind = names.get(int(kind))
                     if detected_kind is not None:
                         detections.append(
-                            Detection(detected_kind, tuple(float(v) for v in box), float(confidence))
+                            Detection(
+                                detected_kind,
+                                tuple(float(v) for v in box),
+                                float(confidence),
+                            )
                         )
             populated.append(
                 VisualFrame(
@@ -948,8 +955,36 @@ class StockVisualContactSelector:
         self,
         source: Path,
         candidate_timestamp: Fraction,
+        *,
+        radius: Fraction = DEFAULT_VISUAL_SEARCH_RADIUS,
     ) -> ContactSelection:
-        return self.select_many(source, (candidate_timestamp,))[0]
+        if self.evidence_provider is None:
+            self.evidence_provider = _StockVisualEvidence(
+                self.device, self.frame_timeline
+            )
+        provider = self.evidence_provider
+        if radius <= DEFAULT_VISUAL_SEARCH_RADIUS:
+            frames = provider.frames(source, candidate_timestamp, radius)
+            return select_contact_frame(frames, self.ranker)
+
+        candidate_timestamps = _covering_candidate_timestamps(
+            candidate_timestamp,
+            radius,
+        )
+        windows = provider.frames_many(
+            source,
+            candidate_timestamps,
+            DEFAULT_VISUAL_SEARCH_RADIUS,
+        )
+        selections = tuple(
+            select_contact_frame(frames, self.ranker) for frames in windows
+        )
+        accepted = tuple(
+            selection for selection in selections if selection.frame is not None
+        )
+        if accepted:
+            return max(accepted, key=_accepted_selection_evidence)
+        return max(selections, key=_failed_selection_evidence)
 
     def select_many(
         self,
@@ -965,6 +1000,45 @@ class StockVisualContactSelector:
         return tuple(
             select_contact_frame(frames, self.ranker) for frames in windows
         )
+
+
+def _covering_candidate_timestamps(
+    midpoint: Fraction,
+    radius: Fraction,
+) -> tuple[Fraction, ...]:
+    """Tile a wide search region with calibrated local evidence windows."""
+
+    if radius <= DEFAULT_VISUAL_SEARCH_RADIUS:
+        return (midpoint,)
+    first = midpoint - radius + DEFAULT_VISUAL_SEARCH_RADIUS
+    last = midpoint + radius - DEFAULT_VISUAL_SEARCH_RADIUS
+    step = 2 * DEFAULT_VISUAL_SEARCH_RADIUS
+    candidates: list[Fraction] = []
+    candidate = first
+    while candidate <= last:
+        candidates.append(candidate)
+        candidate += step
+    if candidates[-1] != last:
+        candidates.append(last)
+    return tuple(candidates)
+
+
+def _failed_selection_evidence(selection: ContactSelection) -> tuple[float, int]:
+    diagnostics = selection.diagnostics
+    if diagnostics is None:
+        return (0.0, 0)
+    ranking = diagnostics.deterministic.ranked_frames
+    return (
+        max((frame.score for frame in ranking), default=0.0),
+        len(diagnostics.deterministic.racket_frames),
+    )
+
+
+def _accepted_selection_evidence(
+    selection: ContactSelection,
+) -> tuple[float, int]:
+    assert selection.frame is not None
+    return (selection.contact_confidence, -selection.frame.ordinal)
 
 
 __all__ = [

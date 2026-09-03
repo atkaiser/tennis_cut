@@ -58,11 +58,10 @@ override the playback factor, destination, or optional comparison clip output.
 Normal runs print timestamped progress for long inspection, detection, and
 rendering stages; use `--quiet` to show errors only.
 
-When the pro video has no reusable contact-frame selection, the command opens
-a paused exact-frame picker. Use the on-screen controls or `A/S/F/V` to move
-`-10/-1/+1/+10` frames, `D/W/E/R` to choose forehand/backhand/volley/serve,
-`Z` to confirm, or `Q` to cancel. Confirmation saves a source-bound selection
-beside the pro video for future runs; unchanged sources bypass the picker.
+The professional reference should be a trimmed forehand clip with contact in
+the middle 75% of its duration. The command searches that region with the same
+bundled visual contact detector used for the user's swings; no manual frame
+selection or sidecar is required.
 
 
 ## Linting
@@ -119,16 +118,13 @@ install the locked Python environment and run:
 
 ```bash
 uv sync --locked
-QT_QPA_PLATFORM=offscreen LIBGL_ALWAYS_SOFTWARE=1 \
-  uv run python -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests -v
 ```
 
-The suite is CPU-only. On headless Linux, the Qt offscreen platform also needs
-the system EGL/OpenGL, XKB, and XCB cursor runtime libraries; the acceptance
-workflow in `.github/workflows/acceptance.yml` lists the Ubuntu packages and pins the
-Python 3.11.11, FFmpeg 6.1, PySide 6.9.0, and uv versions used in CI. The
-generated-media test requires the H.264 encoder provided by the Ubuntu `ffmpeg`
-package.
+The suite is CPU-only. The acceptance workflow in
+`.github/workflows/acceptance.yml` pins the Python 3.11.11, FFmpeg 6.1, and uv
+versions used in CI. The generated-media test requires the H.264 encoder
+provided by the Ubuntu `ffmpeg` package.
 
 
 ## TODO

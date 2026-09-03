@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from fractions import Fraction
 import io
-import json
 import logging
 from pathlib import Path
 import tempfile
@@ -20,23 +19,13 @@ from tennis_cut.comparison.planning import (
 )
 from tennis_cut.comparison.pro_selection import (
     DecodedFrame,
-    FileSidecarStore,
     InspectedMedia,
-    PickerSelection,
-    PickerSession,
     ProSelection,
-    SelectionCancelled,
     SelectionProcessingFailure,
-    resolve_pro_selection,
 )
 from tennis_cut.comparison.workflow import ComparisonRequest
 from tennis_cut.swing_detection import DEFAULT_TEMPORAL_RANKER_MODEL, DetectedSwing
 from tennis_cut.temporal_ranker import load_temporal_ranker
-
-
-class NoPicker:
-    def pick(self, session: PickerSession) -> None:
-        raise AssertionError("a valid saved selection must remain noninteractive")
 
 
 class ComparisonCliParserTests(unittest.TestCase):
@@ -128,16 +117,7 @@ class ComparisonCliParserTests(unittest.TestCase):
         self.assertIn("unrecognized arguments: --prototype", stderr.getvalue())
 
 
-class ConfirmingPicker:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def pick(self, session: PickerSession) -> PickerSelection:
-        self.calls += 1
-        return PickerSelection(15, "forehand")
-
-
-class ValidSidecarDependencies:
+class ValidDependencies:
     def __init__(self, user_video: Path, pro_video: Path) -> None:
         frames = tuple(
             DecodedFrame(0, ordinal, ordinal, Fraction(1, 10))
@@ -164,15 +144,10 @@ class ValidSidecarDependencies:
         pro_video: Path,
         pro_speed: Fraction,
         inspected_media: InspectedMedia,
-    ) -> ProSelection | SelectionCancelled | SelectionProcessingFailure:
+        detection_config: object,
+    ) -> ProSelection | SelectionProcessingFailure:
         self.selection_resolutions += 1
-        return resolve_pro_selection(
-            pro_video=pro_video,
-            pro_speed=pro_speed,
-            inspected_media=inspected_media,
-            sidecar_store=FileSidecarStore(),
-            picker=NoPicker(),
-        )
+        return ProSelection(pro_video, inspected_media.frames[15])
 
     def detect_swings(
         self, request: ComparisonRequest, user_source: ComparisonSource
@@ -197,7 +172,7 @@ class ValidSidecarDependencies:
         primary.write_bytes(b"compilation")
 
 
-class FailedEncoderDependencies(ValidSidecarDependencies):
+class FailedEncoderDependencies(ValidDependencies):
     def render_artifacts(
         self,
         plans: tuple[ComparisonRenderPlan, ...],
@@ -207,45 +182,12 @@ class FailedEncoderDependencies(ValidSidecarDependencies):
         raise MediaCommandFailed("ffmpeg", 1, "raw encoder details")
 
 
-class NewSelectionDependencies(ValidSidecarDependencies):
-    def __init__(self, user_video: Path, pro_video: Path) -> None:
-        super().__init__(user_video, pro_video)
-        self.picker = ConfirmingPicker()
-
-    def resolve_selection(
-        self,
-        pro_video: Path,
-        pro_speed: Fraction,
-        inspected_media: InspectedMedia,
-    ) -> ProSelection | SelectionCancelled | SelectionProcessingFailure:
-        self.selection_resolutions += 1
-        return resolve_pro_selection(
-            pro_video=pro_video,
-            pro_speed=pro_speed,
-            inspected_media=inspected_media,
-            sidecar_store=FileSidecarStore(),
-            picker=self.picker,
-        )
-
-
-class FailingNewSelectionDependencies(NewSelectionDependencies):
-    def render_artifacts(
-        self,
-        plans: tuple[ComparisonRenderPlan, ...],
-        primary: Path,
-        clips: tuple[Path, ...],
-    ) -> None:
-        primary.parent.mkdir(parents=True, exist_ok=True)
-        primary.write_bytes(b"partial")
-        raise OSError("encoder stopped")
-
-
-class StoppedSelectionDependencies(ValidSidecarDependencies):
+class StoppedSelectionDependencies(ValidDependencies):
     def __init__(
         self,
         user_video: Path,
         pro_video: Path,
-        result: SelectionCancelled | SelectionProcessingFailure,
+        result: SelectionProcessingFailure,
     ) -> None:
         super().__init__(user_video, pro_video)
         self.result = result
@@ -255,7 +197,8 @@ class StoppedSelectionDependencies(ValidSidecarDependencies):
         pro_video: Path,
         pro_speed: Fraction,
         inspected_media: InspectedMedia,
-    ) -> SelectionCancelled | SelectionProcessingFailure:
+        detection_config: object,
+    ) -> SelectionProcessingFailure:
         self.selection_resolutions += 1
         return self.result
 
@@ -265,7 +208,7 @@ class StoppedSelectionDependencies(ValidSidecarDependencies):
         raise AssertionError("models must remain lazy when selection does not complete")
 
 
-class MissingAudioDependencies(ValidSidecarDependencies):
+class MissingAudioDependencies(ValidDependencies):
     def user_has_audio(self, path: Path) -> bool:
         return False
 
@@ -335,7 +278,7 @@ class ComparisonCliTests(unittest.TestCase):
                 patch("sys.stdout", new_callable=io.StringIO) as stdout,
                 patch("sys.stderr", new_callable=io.StringIO) as stderr,
             ):
-                dependencies = ValidSidecarDependencies(missing_user, pro_video)
+                dependencies = ValidDependencies(missing_user, pro_video)
                 status = main(
                     [
                         str(missing_user),
@@ -379,12 +322,12 @@ class ComparisonCliTests(unittest.TestCase):
             cases = (
                 (
                     [*base_argv[:3], "0", *base_argv[4:]],
-                    ValidSidecarDependencies(user_video, pro_video),
+                    ValidDependencies(user_video, pro_video),
                     "pro speed must be greater than zero",
                 ),
                 (
                     [*base_argv, "--slowmo", "2"],
-                    ValidSidecarDependencies(user_video, pro_video),
+                    ValidDependencies(user_video, pro_video),
                     "slow motion must be in (0, 1]",
                 ),
                 (
@@ -424,7 +367,7 @@ class ComparisonCliTests(unittest.TestCase):
             clips_directory = output_directory / "user_vs_pro_slow0.0625x_clips"
             primary.touch()
             clips_directory.mkdir()
-            dependencies = ValidSidecarDependencies(user_video, pro_video)
+            dependencies = ValidDependencies(user_video, pro_video)
 
             with (
                 patch("sys.stdout", new_callable=io.StringIO) as stdout,
@@ -463,12 +406,11 @@ class ComparisonCliTests(unittest.TestCase):
         self,
     ) -> None:
         cases = (
-            (SelectionCancelled(), "pro selection cancelled"),
             (
                 SelectionProcessingFailure(
-                    "persist pro selection", "disk is read-only"
+                    "pro contact detection", "visual contact unavailable"
                 ),
-                "persist pro selection failed: disk is read-only",
+                "pro contact detection failed: visual contact unavailable",
             ),
         )
         for selection_result, message in cases:
@@ -515,7 +457,7 @@ class ComparisonCliTests(unittest.TestCase):
                 self.assertEqual(stderr.getvalue(), f"tennis-compare: {message}\n")
                 self.assertFalse(output_directory.exists())
 
-    def test_new_confirmation_continues_and_future_run_bypasses_picker(self) -> None:
+    def test_automatic_contact_runs_complete_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
             user_video = directory / "user.mov"
@@ -525,122 +467,6 @@ class ComparisonCliTests(unittest.TestCase):
             models = tuple(directory / name for name in ("audio", "shot", "type"))
             for model in models:
                 model.touch()
-            common_argv = [
-                str(user_video),
-                str(pro_video),
-                "--pro-speed",
-                "1",
-                "--audio-model",
-                str(models[0]),
-                "--shot-model",
-                str(models[1]),
-                "--shot-type-model",
-                str(models[2]),
-            ]
-            first_dependencies = NewSelectionDependencies(user_video, pro_video)
-
-            with patch("sys.stdout", new_callable=io.StringIO):
-                first_status = main(
-                    [*common_argv, "--output-dir", str(directory / "first")],
-                    dependencies=first_dependencies,
-                )
-            with patch("sys.stdout", new_callable=io.StringIO) as quiet_stdout:
-                second_status = main(
-                    [
-                        *common_argv,
-                        "--output-dir",
-                        str(directory / "second"),
-                        "--quiet",
-                    ],
-                    dependencies=ValidSidecarDependencies(user_video, pro_video),
-                )
-
-            self.assertEqual((first_status, second_status), (0, 0))
-            self.assertEqual(first_dependencies.picker.calls, 1)
-            self.assertEqual(quiet_stdout.getvalue(), "")
-            self.assertTrue(
-                pro_video.with_name("pro.mov.tennis-compare.json").is_file()
-            )
-
-    def test_new_sidecar_survives_later_failure_without_comparison_output(self) -> None:
-        with tempfile.TemporaryDirectory() as directory_name:
-            directory = Path(directory_name)
-            user_video = directory / "user.mov"
-            pro_video = directory / "pro.mov"
-            user_video.write_bytes(b"user")
-            pro_video.write_bytes(b"pro")
-            models = tuple(directory / name for name in ("audio", "shot", "type"))
-            for model in models:
-                model.touch()
-            output_directory = directory / "output"
-            dependencies = FailingNewSelectionDependencies(user_video, pro_video)
-
-            with (
-                patch("sys.stdout", new_callable=io.StringIO) as stdout,
-                patch("sys.stderr", new_callable=io.StringIO) as stderr,
-            ):
-                status = main(
-                    [
-                        str(user_video),
-                        str(pro_video),
-                        "--pro-speed",
-                        "1",
-                        "--output-dir",
-                        str(output_directory),
-                        "--audio-model",
-                        str(models[0]),
-                        "--shot-model",
-                        str(models[1]),
-                        "--shot-type-model",
-                        str(models[2]),
-                    ],
-                    dependencies=dependencies,
-                )
-
-            self.assertEqual(status, 1)
-            self.assertEqual(stdout.getvalue(), "")
-            self.assertEqual(
-                stderr.getvalue(),
-                "tennis-compare: comparison rendering failed: encoder stopped\n",
-            )
-            self.assertTrue(
-                pro_video.with_name("pro.mov.tennis-compare.json").is_file()
-            )
-            self.assertFalse(output_directory.exists())
-            self.assertEqual(user_video.read_bytes(), b"user")
-            self.assertEqual(pro_video.read_bytes(), b"pro")
-
-    def test_valid_saved_selection_runs_complete_noninteractive_command(self) -> None:
-        with tempfile.TemporaryDirectory() as directory_name:
-            directory = Path(directory_name)
-            user_video = directory / "user.mov"
-            pro_video = directory / "pro.mov"
-            user_video.write_bytes(b"user")
-            pro_video.write_bytes(b"pro")
-            models = tuple(directory / name for name in ("audio", "shot", "type"))
-            for model in models:
-                model.touch()
-            pro_stat = pro_video.stat()
-            sidecar = pro_video.with_name(f"{pro_video.name}.tennis-compare.json")
-            sidecar.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "source": {
-                            "name": pro_video.name,
-                            "size_bytes": pro_stat.st_size,
-                            "mtime_ns": pro_stat.st_mtime_ns,
-                        },
-                        "video_stream": {
-                            "index": 0,
-                            "time_base": {"numerator": 1, "denominator": 10},
-                        },
-                        "contact_frame": {"ordinal": 15, "pts": 15},
-                        "shot_type": "forehand",
-                    }
-                ),
-                encoding="utf-8",
-            )
             output_directory = directory / "output"
             argv = [
                 str(user_video),
@@ -658,7 +484,7 @@ class ComparisonCliTests(unittest.TestCase):
                 "--shot-type-model",
                 str(models[2]),
             ]
-            dependencies = ValidSidecarDependencies(user_video, pro_video)
+            dependencies = ValidDependencies(user_video, pro_video)
 
             with (
                 patch("sys.stdout", new_callable=io.StringIO) as stdout,
@@ -684,26 +510,6 @@ class ComparisonCliTests(unittest.TestCase):
             models = tuple(directory / name for name in ("audio", "shot", "type"))
             for model in models:
                 model.touch()
-            pro_stat = pro_video.stat()
-            pro_video.with_name(f"{pro_video.name}.tennis-compare.json").write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "source": {
-                            "name": pro_video.name,
-                            "size_bytes": pro_stat.st_size,
-                            "mtime_ns": pro_stat.st_mtime_ns,
-                        },
-                        "video_stream": {
-                            "index": 0,
-                            "time_base": {"numerator": 1, "denominator": 10},
-                        },
-                        "contact_frame": {"ordinal": 15, "pts": 15},
-                        "shot_type": "forehand",
-                    }
-                ),
-                encoding="utf-8",
-            )
             base_argv = [
                 str(user_video),
                 str(pro_video),

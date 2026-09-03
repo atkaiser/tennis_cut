@@ -21,7 +21,6 @@ from .workflow import (
     ComparisonDependencies,
     ComparisonProcessingFailed,
     ComparisonRequest,
-    ComparisonSelectionCancelled,
     InvalidComparisonRequest,
     SystemComparisonDependencies,
     compare_videos,
@@ -126,9 +125,6 @@ def main(
     except InvalidComparisonRequest as error:
         print(f"tennis-compare: {error}", file=sys.stderr)
         return 2
-    except ComparisonSelectionCancelled as error:
-        print(f"tennis-compare: {error}", file=sys.stderr)
-        return 1
     except ComparisonProcessingFailed as error:
         if args.verbose and error.diagnostics:
             logging.error(error.diagnostics)
