@@ -3,12 +3,13 @@ from __future__ import annotations
 from fractions import Fraction
 import io
 import json
+import logging
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from tennis_cut.comparison.cli import build_parser, main
+from tennis_cut.comparison.cli import _configure_logging, build_parser, main
 from tennis_cut.comparison.media import MediaCommandFailed
 from tennis_cut.comparison.planning import (
     ComparisonRenderPlan,
@@ -39,6 +40,40 @@ class NoPicker:
 
 
 class ComparisonCliParserTests(unittest.TestCase):
+    def test_normal_logging_is_timestamped_info_and_quiet_suppresses_it(self) -> None:
+        with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            _configure_logging(verbose=False, quiet=False)
+            logging.getLogger("tennis_cut.progress-test").info(
+                "Inspecting video metadata"
+            )
+
+        self.assertRegex(
+            stderr.getvalue(),
+            r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} INFO: "
+            r"Inspecting video metadata\n$",
+        )
+
+        with patch("sys.stderr", new_callable=io.StringIO) as quiet_stderr:
+            _configure_logging(verbose=False, quiet=True)
+            logging.getLogger("tennis_cut.progress-test").info("hidden progress")
+
+        self.assertEqual(quiet_stderr.getvalue(), "")
+
+    def test_debug_report_only_selects_report_without_video_rendering(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "user.mov",
+                "pro.mov",
+                "--pro-speed",
+                "1",
+                "--debug-report-only",
+                "diagnostics.html",
+            ]
+        )
+
+        self.assertEqual(args.debug_report_only, Path("diagnostics.html"))
+        self.assertIsNone(args.debug_report)
+
     def test_defaults_to_bundled_visual_contact_ranker(self) -> None:
         build_parser().parse_args(["user.mov", "pro.mov", "--pro-speed", "1"])
 
@@ -139,7 +174,9 @@ class ValidSidecarDependencies:
             picker=NoPicker(),
         )
 
-    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
+    def detect_swings(
+        self, request: ComparisonRequest, user_source: ComparisonSource
+    ) -> tuple[DetectedSwing, ...]:
         return (DetectedSwing(0, Fraction(3, 2), "forehand"),)
 
     def create_player_locator(self, device: str | None) -> object:
@@ -222,7 +259,9 @@ class StoppedSelectionDependencies(ValidSidecarDependencies):
         self.selection_resolutions += 1
         return self.result
 
-    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
+    def detect_swings(
+        self, request: ComparisonRequest, user_source: ComparisonSource
+    ) -> tuple[DetectedSwing, ...]:
         raise AssertionError("models must remain lazy when selection does not complete")
 
 

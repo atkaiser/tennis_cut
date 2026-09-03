@@ -11,13 +11,17 @@ from dataclasses import dataclass
 import math
 from fractions import Fraction
 import json
+import logging
 from pathlib import Path
 import subprocess
+import tempfile
+from time import monotonic
 from typing import Literal, Protocol
 
 ObjectKind = Literal["person", "ball", "racket"]
 FEATURE_VERSION = 1
 TIE_SCORE_TOLERANCE = 1e-6
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -131,6 +135,28 @@ class VisualContactSelector(Protocol):
     ) -> ContactSelection:
         """Select visual contact evidence near one audio candidate."""
 
+    def select_many(
+        self,
+        source: Path,
+        candidate_timestamps: tuple[Fraction, ...],
+    ) -> tuple[ContactSelection, ...]:
+        """Select contacts while sharing source decoding across candidates."""
+
+
+class TimelineFrame(Protocol):
+    """Exact decoded-frame metadata required by visual evidence extraction."""
+
+    stream_index: int
+    ordinal: int
+    pts: int
+    time_base: Fraction
+
+
+class FrameTimeline(Protocol):
+    """Previously inspected ordered frame metadata for one source video."""
+
+    frames: tuple[TimelineFrame, ...]
+
 
 @dataclass(frozen=True)
 class RankedFrame:
@@ -162,10 +188,21 @@ class ContactSelection:
     plausible_frames: tuple[int, ...]
     omission_reason: str | None
     feature_version: int = FEATURE_VERSION
+    diagnostics: ContactDecisionDiagnostics | None = None
 
     @property
     def selected_frame(self) -> int | None:
         return None if self.frame is None else self.frame.ordinal
+
+
+@dataclass(frozen=True)
+class ContactDecisionDiagnostics:
+    """Visual evidence and intermediate decisions retained for debugging."""
+
+    frames: tuple[VisualFrame, ...]
+    deterministic: DeterministicSelection
+    temporal_prediction: TemporalPrediction | None
+    confidence_threshold: float
 
 
 @dataclass
@@ -500,46 +537,194 @@ def select_contact_frame(
 
     prepared = _prepare_frames(frames)
     deterministic = _rank_prepared_frames(prepared)
-    if deterministic.omission_reason is not None:
+    threshold = float(getattr(ranker, "confidence_threshold", 0.0)) if ranker is not None else 0.12
+
+    def result(
+        frame: VisualFrame | None,
+        confidence: float,
+        plausible: tuple[int, ...],
+        reason: str | None,
+        prediction: TemporalPrediction | None = None,
+    ) -> ContactSelection:
         return ContactSelection(
-            None,
-            0.0,
-            deterministic.plausible_frames,
-            deterministic.omission_reason,
+            frame,
+            confidence,
+            plausible,
+            reason,
+            diagnostics=ContactDecisionDiagnostics(
+                frames,
+                deterministic,
+                prediction,
+                threshold,
+            ),
         )
+
+    if deterministic.omission_reason is not None:
+        return result(None, 0.0, deterministic.plausible_frames, deterministic.omission_reason)
     assert deterministic.selected_frame is not None
     if ranker is None:
         ranker = DeterministicTemporalRanker()
+        threshold = ranker.confidence_threshold
     if ranker.feature_version != deterministic.feature_version:
-        return ContactSelection(None, 0.0, (), "incompatible temporal feature version")
+        return result(None, 0.0, (), "incompatible temporal feature version")
     prediction = ranker.predict(_feature_rows(prepared))
     if all(frame.ordinal != prediction.frame_ordinal for frame in frames):
-        return ContactSelection(None, 0.0, (), "temporal ranker selected unknown frame")
+        return result(
+            None,
+            0.0,
+            (),
+            "temporal ranker selected unknown frame",
+            prediction,
+        )
     if abs(prediction.frame_ordinal - deterministic.selected_frame) > 1:
-        return ContactSelection(None, 0.0, deterministic.plausible_frames, "temporal ranker disagrees")
+        return result(
+            None,
+            0.0,
+            deterministic.plausible_frames,
+            "temporal ranker disagrees",
+            prediction,
+        )
     confidence = prediction.confidence
     if prediction.frame_ordinal == deterministic.selected_frame:
         confidence = min(1.0, confidence + getattr(ranker, "exact_agreement_bonus", 0.0))
     if confidence < getattr(ranker, "confidence_threshold", 0.0):
-        return ContactSelection(
+        return result(
             None,
             0.0,
             deterministic.plausible_frames,
             "below contact confidence threshold",
+            prediction,
         )
     selected = next(frame for frame in frames if frame.ordinal == deterministic.selected_frame)
     plausible = tuple(sorted(set(deterministic.plausible_frames) | {prediction.frame_ordinal}))
     if len(plausible) > 2 or (len(plausible) == 2 and plausible[1] != plausible[0] + 1):
-        return ContactSelection(None, 0.0, plausible, "broad or separated ambiguity")
-    return ContactSelection(selected, max(0.0, min(1.0, confidence)), plausible, None)
+        return result(
+            None,
+            0.0,
+            plausible,
+            "broad or separated ambiguity",
+            prediction,
+        )
+    return result(
+        selected,
+        max(0.0, min(1.0, confidence)),
+        plausible,
+        None,
+        prediction,
+    )
+
+
+def _materialize_exact_frame_paths(
+    source: Path,
+    ordinals: tuple[int, ...],
+    output_directory: Path,
+) -> dict[int, Path]:
+    """Decode requested ordinals in one FFmpeg traversal."""
+
+    unique_ordinals = tuple(sorted(set(ordinals)))
+    if not unique_ordinals:
+        return {}
+    _LOG.info(
+        "Decoding %d exact source frames from %s (ordinals %d-%d)",
+        len(unique_ordinals),
+        source,
+        unique_ordinals[0],
+        unique_ordinals[-1],
+    )
+    started = monotonic()
+    ranges: list[tuple[int, int]] = []
+    range_start = unique_ordinals[0]
+    range_end = range_start
+    for ordinal in unique_ordinals[1:]:
+        if ordinal == range_end + 1:
+            range_end = ordinal
+            continue
+        ranges.append((range_start, range_end))
+        range_start = range_end = ordinal
+    ranges.append((range_start, range_end))
+    selection = "+".join(
+        f"eq(n\\,{start})"
+        if start == end
+        else f"between(n\\,{start}\\,{end})"
+        for start, end in ranges
+    )
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-noautorotate",
+            "-i",
+            str(source),
+            "-map",
+            "0:v:0",
+            "-vf",
+            f"select={selection}",
+            "-fps_mode",
+            "passthrough",
+            "-start_number",
+            "0",
+            str(output_directory / "frame_%09d.png"),
+            "-y",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "could not decode exact source frames: " + completed.stderr.strip()
+        )
+    paths = tuple(sorted(output_directory.glob("frame_*.png")))
+    if len(paths) != len(unique_ordinals):
+        raise ValueError("failed to decode every requested source frame")
+    _LOG.info(
+        "Finished exact source-frame decode: %d frames in %.1fs",
+        len(paths),
+        monotonic() - started,
+    )
+    return dict(zip(unique_ordinals, paths, strict=True))
+
+
+def decode_exact_frame_images(
+    source: Path, ordinals: tuple[int, ...]
+) -> dict[int, object]:
+    """Decode images by FFmpeg ordinal so pixels and frame identities agree."""
+
+    import cv2
+
+    with tempfile.TemporaryDirectory() as directory_name:
+        paths = _materialize_exact_frame_paths(
+            source,
+            ordinals,
+            Path(directory_name),
+        )
+        images = {}
+        for ordinal, path in paths.items():
+            image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if image is None:
+                raise ValueError(f"could not read decoded source frame {ordinal}")
+            images[ordinal] = image
+    return images
 
 
 class _StockVisualEvidence:
     """Decode exact source frames and run the stock YOLO detector lazily."""
 
-    def __init__(self, device: str | None = None) -> None:
+    def __init__(
+        self,
+        device: str | None = None,
+        frame_timeline: FrameTimeline | None = None,
+    ) -> None:
         self.device = device
         self._model = None
+        self._frame_metadata = (
+            None
+            if frame_timeline is None
+            else tuple(
+                (frame.ordinal, frame.stream_index, frame.pts, frame.time_base)
+                for frame in frame_timeline.frames
+            )
+        )
 
     def _load_model(self):
         if self._model is None:
@@ -551,6 +736,14 @@ class _StockVisualEvidence:
     def _frame_timestamps(
         self, source: Path
     ) -> tuple[tuple[int, int, int, Fraction], ...]:
+        if self._frame_metadata is not None:
+            _LOG.info(
+                "Reusing inspected frame timeline: %d frames",
+                len(self._frame_metadata),
+            )
+            return self._frame_metadata
+        _LOG.info("Scanning complete frame timeline with ffprobe: %s", source)
+        started = monotonic()
         completed = subprocess.run(
             [
                 "ffprobe",
@@ -574,11 +767,17 @@ class _StockVisualEvidence:
         stream = payload["streams"][0]
         stream_index = int(stream["index"])
         time_base = Fraction(stream["time_base"])
-        return tuple(
+        frames = tuple(
             (ordinal, stream_index, int(frame["pts"]), time_base)
             for ordinal, frame in enumerate(payload.get("frames", []))
             if int(frame["stream_index"]) == stream_index
         )
+        _LOG.info(
+            "Finished frame timeline scan: %d frames in %.1fs",
+            len(frames),
+            monotonic() - started,
+        )
+        return frames
 
     def frames(
         self,
@@ -586,31 +785,82 @@ class _StockVisualEvidence:
         candidate_timestamp: Fraction,
         radius: Fraction = Fraction(2, 5),
     ) -> tuple[VisualFrame, ...]:
-        metadata = self._frame_timestamps(source)
-        selected = tuple(
-            item
-            for item in metadata
-            if candidate_timestamp - radius
-            <= item[2] * item[3]
-            <= candidate_timestamp + radius
-        )
-        if not selected:
+        return self.frames_many(source, (candidate_timestamp,), radius)[0]
+
+    def frames_many(
+        self,
+        source: Path,
+        candidate_timestamps: tuple[Fraction, ...],
+        radius: Fraction = Fraction(2, 5),
+    ) -> tuple[tuple[VisualFrame, ...], ...]:
+        """Decode every candidate window in one source traversal."""
+
+        if not candidate_timestamps:
             return ()
+        _LOG.info(
+            "Collecting visual evidence for %d candidates (radius %.3fs)",
+            len(candidate_timestamps),
+            float(radius),
+        )
+        metadata = self._frame_timestamps(source)
+        selected_windows = tuple(
+            tuple(
+                item
+                for item in metadata
+                if candidate_timestamp - radius
+                <= item[2] * item[3]
+                <= candidate_timestamp + radius
+            )
+            for candidate_timestamp in candidate_timestamps
+        )
+        ordinals = tuple(
+            sorted(
+                {
+                    item[0]
+                    for selected in selected_windows
+                    for item in selected
+                }
+            )
+        )
+        if not ordinals:
+            return tuple(() for _candidate in candidate_timestamps)
+        with tempfile.TemporaryDirectory() as directory_name:
+            paths = _materialize_exact_frame_paths(
+                source,
+                ordinals,
+                Path(directory_name),
+            )
+            model = self._load_model()
+            return tuple(
+                self._detect_materialized_window(
+                    selected,
+                    paths,
+                    model,
+                    candidate_index=index,
+                    candidate_count=len(selected_windows),
+                )
+                for index, selected in enumerate(selected_windows, start=1)
+            )
+
+    def _detect_materialized_window(
+        self,
+        selected: tuple[tuple[int, int, int, Fraction], ...],
+        paths: dict[int, Path],
+        model: object,
+        *,
+        candidate_index: int,
+        candidate_count: int,
+    ) -> tuple[VisualFrame, ...]:
         import cv2
 
-        capture = cv2.VideoCapture(str(source))
-        if not capture.isOpened():
-            raise ValueError(f"could not open video: {source}")
+        if not selected:
+            return ()
         images: list[object] = []
         visual_frames: list[VisualFrame] = []
-        first = selected[0][0]
-        capture.set(cv2.CAP_PROP_POS_FRAMES, first)
         for ordinal, stream_index, pts, time_base in selected:
-            if ordinal != first + len(images):
-                capture.set(cv2.CAP_PROP_POS_FRAMES, ordinal)
-            ok, image = capture.read()
-            if not ok:
-                break
+            image = cv2.imread(str(paths[ordinal]), cv2.IMREAD_COLOR)
+            if image is None:
+                raise ValueError(f"could not read decoded source frame {ordinal}")
             images.append(image)
             visual_frames.append(
                 VisualFrame(
@@ -624,10 +874,13 @@ class _StockVisualEvidence:
                     )
                 )
             )
-        capture.release()
-        if not visual_frames:
-            return ()
-        model = self._load_model()
+        _LOG.info(
+            "Running visual detector for candidate %d/%d on %d exact frames",
+            candidate_index,
+            candidate_count,
+            len(images),
+        )
+        inference_started = monotonic()
         results = model.predict(
             images,
             classes=[0, 32, 38],
@@ -636,6 +889,12 @@ class _StockVisualEvidence:
             imgsz=1280,
             device=self.device,
             verbose=False,
+        )
+        _LOG.info(
+            "Finished visual detector inference for candidate %d/%d in %.1fs",
+            candidate_index,
+            candidate_count,
+            monotonic() - inference_started,
         )
         populated: list[VisualFrame] = []
         for frame, result in zip(visual_frames, results, strict=True):
@@ -677,10 +936,12 @@ class StockVisualContactSelector:
         *,
         ranker: TemporalRanker | None = None,
         device: str | None = None,
+        frame_timeline: FrameTimeline | None = None,
         evidence_provider: _StockVisualEvidence | None = None,
     ) -> None:
         self.ranker = ranker
         self.device = device
+        self.frame_timeline = frame_timeline
         self.evidence_provider = evidence_provider
 
     def select(
@@ -688,11 +949,22 @@ class StockVisualContactSelector:
         source: Path,
         candidate_timestamp: Fraction,
     ) -> ContactSelection:
+        return self.select_many(source, (candidate_timestamp,))[0]
+
+    def select_many(
+        self,
+        source: Path,
+        candidate_timestamps: tuple[Fraction, ...],
+    ) -> tuple[ContactSelection, ...]:
         if self.evidence_provider is None:
-            self.evidence_provider = _StockVisualEvidence(self.device)
+            self.evidence_provider = _StockVisualEvidence(
+                self.device, self.frame_timeline
+            )
         provider = self.evidence_provider
-        frames = provider.frames(source, candidate_timestamp)
-        return select_contact_frame(frames, self.ranker)
+        windows = provider.frames_many(source, candidate_timestamps)
+        return tuple(
+            select_contact_frame(frames, self.ranker) for frames in windows
+        )
 
 
 __all__ = [
@@ -701,6 +973,7 @@ __all__ = [
     "DeterministicSelection",
     "FEATURE_VERSION",
     "FrameEvidence",
+    "FrameTimeline",
     "ObjectKind",
     "SourceFrameIdentity",
     "TemporalFeatures",
@@ -709,6 +982,7 @@ __all__ = [
     "VisualFrame",
     "VisualContactSelector",
     "StockVisualContactSelector",
+    "decode_exact_frame_images",
     "extract_temporal_features",
     "rank_contact_frames",
     "select_contact_frame",

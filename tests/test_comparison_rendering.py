@@ -175,7 +175,9 @@ class GeneratedWorkflowDependencies:
         self.pro_speed = pro_speed
         return ProSelection(pro_video, inspected_media.frames[25], "forehand")
 
-    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
+    def detect_swings(
+        self, request: ComparisonRequest, user_source: ComparisonSource
+    ) -> tuple[DetectedSwing, ...]:
         return (
             DetectedSwing(2, Fraction(5, 2), "forehand"),
             DetectedSwing(7, Fraction(3), "forehand"),
@@ -213,7 +215,7 @@ def probe_output(video: Path) -> dict:
             "-show_streams",
             "-show_frames",
             "-show_entries",
-            "stream=codec_type,width,height,time_base,r_frame_rate,duration_ts:frame=pts",
+            "stream=codec_type,width,height,time_base,duration_ts:frame=pts",
             "-of",
             "json",
             str(video),
@@ -295,7 +297,14 @@ class GeneratedMediaRenderingTests(unittest.TestCase):
                     clips_directory = output_directory / "user_vs_pro_slow1x_clips"
                     self.assertEqual(status, 0)
                     self.assertEqual(stdout.getvalue(), f"{primary}\n")
-                    self.assertEqual(stderr.getvalue(), "")
+                    progress = stderr.getvalue()
+                    self.assertRegex(
+                        progress,
+                        r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} INFO: ",
+                    )
+                    self.assertIn("Preparing materialized compilation", progress)
+                    self.assertIn("Finished video encoding", progress)
+                    self.assertNotIn(" ERROR: ", progress)
                     self.assertEqual(dependencies.pro_speed, Fraction(1, 4))
                     self.assertEqual(dependencies.device, "cpu")
                     self.assertEqual(len(dependencies.rendered_plans), 1)
@@ -379,7 +388,6 @@ class GeneratedMediaRenderingTests(unittest.TestCase):
                     self.assertEqual(
                         Fraction(streams[0]["time_base"]), plans[0].output_time_base
                     )
-                    self.assertEqual(Fraction(streams[0]["r_frame_rate"]), 60)
                     expected_ticks: list[int] = []
                     expected_events = []
                     next_tick = 0

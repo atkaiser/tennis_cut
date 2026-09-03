@@ -57,6 +57,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--shot-type-model", type=Path, default=DEFAULT_SHOT_TYPE_MODEL
     )
     parser.add_argument("--device", choices=("cpu", "cuda", "mps"), default=None)
+    diagnostics = parser.add_mutually_exclusive_group()
+    diagnostics.add_argument(
+        "--debug-report",
+        type=Path,
+        metavar="HTML",
+        help="write a self-contained HTML audit of every audio swing candidate",
+    )
+    diagnostics.add_argument(
+        "--debug-report-only",
+        type=Path,
+        metavar="HTML",
+        help="write the HTML candidate audit without rendering comparison video",
+    )
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument("-v", "--verbose", action="store_true")
     verbosity.add_argument("-q", "--quiet", action="store_true")
@@ -64,10 +77,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _configure_logging(*, verbose: bool, quiet: bool) -> None:
-    level = logging.INFO if verbose else logging.WARNING
-    if quiet:
-        level = logging.ERROR
-    logging.basicConfig(level=level, format="%(levelname)s: %(message)s", force=True)
+    level = logging.ERROR if quiet else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,
+    )
+    if verbose and not quiet:
+        logging.getLogger("tennis_cut").setLevel(logging.DEBUG)
 
 
 def main(
@@ -76,7 +94,10 @@ def main(
     dependencies: ComparisonDependencies | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
-    _configure_logging(verbose=args.verbose, quiet=args.quiet)
+    _configure_logging(
+        verbose=args.verbose,
+        quiet=args.quiet,
+    )
     ranker_model = DEFAULT_TEMPORAL_RANKER_MODEL
     # Dependency fakes deliberately opt out so existing orchestration tests can
     # exercise planning without requiring a local production checkpoint.
@@ -94,10 +115,13 @@ def main(
         shot_type_model=args.shot_type_model,
         temporal_ranker_model=ranker_model,
         device=args.device,
+        diagnostic_report=args.debug_report or args.debug_report_only,
+        diagnostics_only=args.debug_report_only is not None,
     )
     try:
         result = compare_videos(
-            request, dependencies or SystemComparisonDependencies()
+            request,
+            dependencies or SystemComparisonDependencies(),
         )
     except InvalidComparisonRequest as error:
         print(f"tennis-compare: {error}", file=sys.stderr)

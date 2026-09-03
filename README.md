@@ -55,6 +55,8 @@ tennis-compare USER_VIDEO PRO_VIDEO --pro-speed FACTOR
 `FACTOR` describes the pro video's published speed (`1.0` for real time or
 `0.25` for quarter speed). Use `--slowmo`, `--output-dir`, and `--clips` to
 override the playback factor, destination, or optional comparison clip output.
+Normal runs print timestamped progress for long inspection, detection, and
+rendering stages; use `--quiet` to show errors only.
 
 When the pro video has no reusable contact-frame selection, the command opens
 a paused exact-frame picker. Use the on-screen controls or `A/S/F/V` to move
@@ -80,6 +82,32 @@ Actions.
 Visual contact selection and its calibrated confidence gate are bundled with
 `tennis-compare`; normal comparison runs require no contact-ranker setup or
 model option.
+
+To audit missed swings or contact alignment without rendering another video,
+write a self-contained candidate report:
+
+```bash
+tennis-compare USER_VIDEO PRO_VIDEO --pro-speed FACTOR \
+  --debug-report-only processed_vids/swing-diagnostics.html
+```
+
+This also logs every audio peak and its progress through person detection,
+swing classification, visual contact selection, and comparison planning. The
+HTML report includes omission reasons, chosen source frame/timestamp,
+confidence evidence, scoring tables, and annotated neighboring frames.
+
+For a denser audio audit, generate a self-contained table for every 250 ms
+model window (sampled every 50 ms):
+
+```bash
+tennis-audio-diagnostics USER_VIDEO \
+  --output processed_vids/audio-window-diagnostics.html
+```
+
+The report embeds each window's center-frame screenshot, center timestamp,
+0-based source-frame number, audio score bar, and its eventual disposition.
+Suppressed rows identify the pipeline stage and preferred event. Because every
+screenshot is embedded, full-length reports can be large.
 
 
 ## Acceptance tests

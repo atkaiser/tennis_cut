@@ -80,7 +80,9 @@ class ZeroComparisonDependencies:
         self.events.append("select")
         return ProSelection(pro_video, inspected_media.frames[15], "forehand")
 
-    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
+    def detect_swings(
+        self, request: ComparisonRequest, user_source: ComparisonSource
+    ) -> tuple[DetectedSwing, ...]:
         self.events.append("detect")
         return ()
 
@@ -101,6 +103,52 @@ class ZeroComparisonDependencies:
         raise AssertionError("zero comparisons must not render artifacts")
 
 
+class SystemDependencyProgressTests(unittest.TestCase):
+    def test_video_inspection_logs_start_and_completion(self) -> None:
+        dependencies = SystemComparisonDependencies()
+        source = comparison_source(Path("user.mov"))
+
+        with (
+            patch(
+                "tennis_cut.comparison.media.inspect_comparison_source",
+                return_value=source,
+            ),
+            self.assertLogs("tennis_cut.comparison.workflow", level="INFO") as logs,
+        ):
+            result = dependencies.inspect_source(source.path)
+
+        self.assertEqual(result, source)
+        self.assertTrue(
+            any("Inspecting video metadata: user.mov" in entry for entry in logs.output)
+        )
+        self.assertTrue(
+            any(
+                "Finished video metadata: user.mov (31 frames, 1920x1080)" in entry
+                for entry in logs.output
+            )
+        )
+
+    def test_swing_detection_receives_the_inspected_user_timeline(self) -> None:
+        dependencies = SystemComparisonDependencies()
+        source = comparison_source(Path("user.mov"))
+        request = ComparisonRequest(
+            user_video=source.path,
+            pro_video=Path("pro.mov"),
+            pro_speed=Fraction(1),
+        )
+
+        with patch(
+            "tennis_cut.comparison.workflow.detect_comparison_user_swings",
+            return_value=(),
+        ) as detect:
+            result = dependencies.detect_swings(request, source)
+
+        self.assertEqual(result, ())
+        self.assertIs(
+            detect.call_args.kwargs["frame_timeline"], source.inspected_media
+        )
+
+
 class MatchingDependencies(ZeroComparisonDependencies):
     def __init__(self, user_video: Path, pro_video: Path) -> None:
         super().__init__(user_video, pro_video)
@@ -108,7 +156,9 @@ class MatchingDependencies(ZeroComparisonDependencies):
         self.rendered_ordinals: list[int | None] = []
         self.locator_creations = 0
 
-    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
+    def detect_swings(
+        self, request: ComparisonRequest, user_source: ComparisonSource
+    ) -> tuple[DetectedSwing, ...]:
         self.events.append("detect")
         return (
             DetectedSwing(4, Fraction(3, 2), "forehand"),
@@ -175,7 +225,9 @@ class FailedDetectionDependencies(ZeroComparisonDependencies):
     ) -> ProSelection:
         return ProSelection(pro_video, inspected_media.frames[15], "forehand")
 
-    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
+    def detect_swings(
+        self, request: ComparisonRequest, user_source: ComparisonSource
+    ) -> tuple[DetectedSwing, ...]:
         raise OSError("model could not load")
 
 
@@ -219,6 +271,45 @@ class DirectRenderDependencies(MatchingDependencies):
 
 
 class CompareVideosTests(unittest.TestCase):
+    def test_diagnostics_only_writes_report_and_skips_player_work_and_rendering(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video, pro_video, models = comparison_files(directory)
+            report = directory / "diagnostics.html"
+
+            class DiagnosticDependencies(MatchingDependencies):
+                def write_swing_diagnostics(
+                    self,
+                    windows: tuple[SelectedSourceWindow, ...],
+                    pro_shot_type: str,
+                    diagnostic_report: Path | None,
+                ) -> None:
+                    self.events.append(
+                        f"diagnose:{pro_shot_type}:{[window.swing_ordinal for window in windows]}"
+                    )
+                    assert diagnostic_report is not None
+                    diagnostic_report.write_text("diagnostics")
+
+            dependencies = DiagnosticDependencies(user_video, pro_video)
+            request = ComparisonRequest(
+                user_video=user_video,
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
+                diagnostic_report=report,
+                diagnostics_only=True,
+            )
+
+            result = compare_videos(request, dependencies)
+
+            self.assertEqual(result, ComparisonResult((report,), 2))
+            self.assertEqual(report.read_text(), "diagnostics")
+            self.assertEqual(dependencies.locator_creations, 0)
+            self.assertEqual(dependencies.rendered_ordinals, [])
+            self.assertIn("diagnose:forehand:[4, 9]", dependencies.events)
+
     def test_unsupported_pro_shot_type_fails_before_user_detection(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -234,7 +325,11 @@ class CompareVideosTests(unittest.TestCase):
                     self.events.append("select")
                     return ProSelection(pro_video, inspected_media.frames[15], "backhand")
 
-                def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
+                def detect_swings(
+                    self,
+                    request: ComparisonRequest,
+                    user_source: ComparisonSource,
+                ) -> tuple[DetectedSwing, ...]:
                     raise AssertionError("unsupported pro shot must stop before detection")
 
             request = ComparisonRequest(

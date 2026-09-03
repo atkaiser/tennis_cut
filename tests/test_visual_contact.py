@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 from fractions import Fraction
+from pathlib import Path
+import subprocess
+import tempfile
 import unittest
+from unittest.mock import patch
+
+from PIL import Image
 
 from tennis_cut.visual_contact import (
     Detection,
     FEATURE_VERSION,
     FrameEvidence,
     ObjectKind,
+    _StockVisualEvidence,
     TemporalPrediction,
     VisualFrame,
+    decode_exact_frame_images,
     rank_contact_frames,
     select_contact_frame,
 )
+from tennis_cut.comparison.pro_selection import DecodedFrame, InspectedMedia
 
 
 def detection(
@@ -137,6 +146,210 @@ class VisualContactSelectionTests(unittest.TestCase):
 
         self.assertIsNone(result.frame)
         self.assertEqual(result.omission_reason, "below contact confidence threshold")
+
+
+class ExactVisualFrameDecodingTests(unittest.TestCase):
+    def test_reuses_preinspected_timeline_without_running_ffprobe(self) -> None:
+        timeline = InspectedMedia(
+            (
+                DecodedFrame(0, 0, 100, Fraction(1, 100)),
+                DecodedFrame(0, 1, 110, Fraction(1, 100)),
+            )
+        )
+        provider = _StockVisualEvidence(device="cpu", frame_timeline=timeline)
+
+        with patch("tennis_cut.visual_contact.subprocess.run") as run:
+            first = provider._frame_timestamps(Path("user.mov"))
+            second = provider._frame_timestamps(Path("user.mov"))
+
+        run.assert_not_called()
+        self.assertEqual(first, second)
+        self.assertEqual(
+            first,
+            (
+                (0, 0, 100, Fraction(1, 100)),
+                (1, 0, 110, Fraction(1, 100)),
+            ),
+        )
+
+    def test_decodes_requested_ffmpeg_ordinals_without_frame_seeking(self) -> None:
+        colors = ((20, 40, 60), (70, 90, 110), (120, 140, 160), (170, 190, 210))
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for ordinal, color in enumerate(colors):
+                Image.new("RGB", (64, 36), color).save(
+                    directory / f"frame_{ordinal:02d}.png"
+                )
+            video = directory / "source.mp4"
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-framerate",
+                    "5",
+                    "-start_number",
+                    "0",
+                    "-i",
+                    str(directory / "frame_%02d.png"),
+                    "-an",
+                    "-c:v",
+                    "libx264",
+                    "-crf",
+                    "0",
+                    "-pix_fmt",
+                    "yuv444p",
+                    str(video),
+                    "-y",
+                ],
+                check=True,
+            )
+
+            decoded = decode_exact_frame_images(video, (3, 1, 3))
+
+        self.assertEqual(tuple(decoded), (1, 3))
+        for ordinal in (1, 3):
+            # OpenCV images are BGR; lossless H.264 can still differ by one level.
+            actual = tuple(float(decoded[ordinal][:, :, channel].mean()) for channel in range(3))
+            expected = tuple(reversed(colors[ordinal]))
+            self.assertTrue(
+                all(abs(channel - target) <= 2 for channel, target in zip(actual, expected))
+            )
+
+    def test_evidence_images_share_the_ffprobe_ordinals_attached_to_them(self) -> None:
+        provider = _StockVisualEvidence(device="cpu")
+        metadata = (
+            (10, 0, 100, Fraction(1, 100)),
+            (11, 0, 110, Fraction(1, 100)),
+            (12, 0, 120, Fraction(1, 100)),
+        )
+        exact_images = {10: object(), 11: object(), 12: object()}
+
+        class EmptyValues:
+            def cpu(self):
+                return self
+
+            def tolist(self):
+                return []
+
+        class EmptyBoxes:
+            xyxy = EmptyValues()
+            cls = EmptyValues()
+            conf = EmptyValues()
+
+        class Result:
+            boxes = EmptyBoxes()
+
+        class Model:
+            observed_images = None
+
+            def predict(self, images, **_options):
+                self.observed_images = images
+                return [Result() for _ in images]
+
+        model = Model()
+        with (
+            patch.object(provider, "_frame_timestamps", return_value=metadata),
+            patch.object(provider, "_load_model", return_value=model),
+            patch(
+                "tennis_cut.visual_contact._materialize_exact_frame_paths",
+                return_value={ordinal: Path(str(ordinal)) for ordinal in exact_images},
+            ) as materialize,
+            patch(
+                "cv2.imread",
+                side_effect=lambda path, _mode: exact_images[int(Path(path).name)],
+            ),
+        ):
+            frames = provider.frames(
+                Path("variable-frame-rate.mov"),
+                Fraction(11, 10),
+                radius=Fraction(1, 10),
+            )
+
+        self.assertEqual(materialize.call_count, 1)
+        self.assertEqual(
+            materialize.call_args.args[:2],
+            (Path("variable-frame-rate.mov"), (10, 11, 12)),
+        )
+        self.assertEqual(model.observed_images, [exact_images[index] for index in (10, 11, 12)])
+        self.assertEqual([frame.ordinal for frame in frames], [10, 11, 12])
+
+    def test_batches_candidate_windows_into_one_ffmpeg_decode(self) -> None:
+        class EmptyValues:
+            def cpu(self):
+                return self
+
+            def tolist(self):
+                return []
+
+        class EmptyBoxes:
+            xyxy = EmptyValues()
+            cls = EmptyValues()
+            conf = EmptyValues()
+
+        class Result:
+            boxes = EmptyBoxes()
+
+        class Model:
+            def predict(self, images, **_options):
+                return [Result() for _ in images]
+
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for ordinal in range(4):
+                Image.new("RGB", (64, 36), (ordinal * 40, 20, 10)).save(
+                    directory / f"frame_{ordinal:02d}.png"
+                )
+            video = directory / "source.mp4"
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-framerate",
+                    "5",
+                    "-start_number",
+                    "0",
+                    "-i",
+                    str(directory / "frame_%02d.png"),
+                    "-an",
+                    "-c:v",
+                    "libx264",
+                    "-crf",
+                    "0",
+                    "-pix_fmt",
+                    "yuv444p",
+                    str(video),
+                    "-y",
+                ],
+                check=True,
+            )
+            timeline = InspectedMedia(
+                tuple(
+                    DecodedFrame(0, ordinal, ordinal, Fraction(1, 5))
+                    for ordinal in range(4)
+                )
+            )
+            provider = _StockVisualEvidence(device="cpu", frame_timeline=timeline)
+
+            with (
+                patch.object(provider, "_load_model", return_value=Model()),
+                patch(
+                    "tennis_cut.visual_contact.subprocess.run",
+                    wraps=subprocess.run,
+                ) as run,
+            ):
+                windows = provider.frames_many(
+                    video,
+                    (Fraction(1, 5), Fraction(3, 5)),
+                    radius=Fraction(1, 5),
+                )
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(
+            tuple(tuple(item.ordinal for item in window) for window in windows),
+            ((0, 1, 2), (2, 3)),
+        )
 
 
 if __name__ == "__main__":

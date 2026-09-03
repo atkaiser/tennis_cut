@@ -6,10 +6,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from fractions import Fraction
+import logging
 import os
 from pathlib import Path
 import shutil
 import tempfile
+from time import monotonic
 from typing import Protocol
 
 from tennis_cut.swing_detection import (
@@ -43,6 +45,8 @@ from .pro_selection import (
     SelectionProcessingFailure,
 )
 
+_LOG = logging.getLogger(__name__)
+
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".m4v", ".avi", ".mkv"})
 
 
@@ -61,6 +65,8 @@ class ComparisonRequest:
     shot_type_model: Path | None = DEFAULT_SHOT_TYPE_MODEL
     temporal_ranker_model: Path | None = DEFAULT_TEMPORAL_RANKER_MODEL
     device: str | None = None
+    diagnostic_report: Path | None = None
+    diagnostics_only: bool = False
 
     @property
     def detection_config(self) -> DetectionConfig:
@@ -125,7 +131,9 @@ class ComparisonDependencies(Protocol):
         inspected_media: InspectedMedia,
     ) -> ProSelection | SelectionCancelled | SelectionProcessingFailure: ...
 
-    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]: ...
+    def detect_swings(
+        self, request: ComparisonRequest, user_source: ComparisonSource
+    ) -> tuple[DetectedSwing, ...]: ...
 
     def create_player_locator(self, device: str | None) -> PlayerLocator: ...
 
@@ -144,18 +152,35 @@ class ComparisonDependencies(Protocol):
 class SystemComparisonDependencies:
     """Production effects for the command-line comparison adapter."""
 
+    def __init__(self) -> None:
+        self._diagnostics_recorder = None
+
     def executable_exists(self, name: str) -> bool:
         return shutil.which(name) is not None
 
     def inspect_source(self, path: Path) -> ComparisonSource:
         from .media import inspect_comparison_source
 
-        return inspect_comparison_source(path)
+        _LOG.info("Inspecting video metadata: %s", path)
+        started = monotonic()
+        source = inspect_comparison_source(path)
+        _LOG.info(
+            "Finished video metadata: %s (%d frames, %dx%d) in %.1fs",
+            path,
+            len(source.inspected_media.frames),
+            source.width,
+            source.height,
+            monotonic() - started,
+        )
+        return source
 
     def user_has_audio(self, path: Path) -> bool:
         from .media import has_audio_stream
 
-        return has_audio_stream(path)
+        _LOG.info("Checking user audio stream: %s", path)
+        has_audio = has_audio_stream(path)
+        _LOG.info("Finished user audio check: %s", "present" if has_audio else "absent")
+        return has_audio
 
     def resolve_selection(
         self,
@@ -167,30 +192,126 @@ class SystemComparisonDependencies:
         from .pro_picker import QtProPicker
         from .pro_selection import resolve_pro_selection
 
-        return resolve_pro_selection(
+        _LOG.info("Resolving professional contact selection: %s", pro_video)
+        selection = resolve_pro_selection(
             pro_video=pro_video,
             pro_speed=pro_speed,
             inspected_media=inspected_media,
             sidecar_store=FileSidecarStore(),
             picker=QtProPicker(pro_video, FfmpegFrameImageReader()),
         )
+        if isinstance(selection, ProSelection):
+            _LOG.info(
+                "Professional contact selected: frame %d at %.6fs (%s)",
+                selection.frame.ordinal,
+                float(selection.frame.timestamp),
+                selection.shot_type,
+            )
+        return selection
 
-    def detect_swings(self, request: ComparisonRequest) -> tuple[DetectedSwing, ...]:
-        return detect_comparison_user_swings(
-            request.user_video, request.detection_config
+    def detect_swings(
+        self, request: ComparisonRequest, user_source: ComparisonSource
+    ) -> tuple[DetectedSwing, ...]:
+        _LOG.info("Detecting swing candidates and visual contacts: %s", request.user_video)
+        started = monotonic()
+        if request.diagnostic_report is None:
+            swings = detect_comparison_user_swings(
+                request.user_video,
+                request.detection_config,
+                frame_timeline=user_source.inspected_media,
+            )
+            _LOG.info(
+                "Finished swing detection: %d accepted swings in %.1fs",
+                len(swings),
+                monotonic() - started,
+            )
+            return swings
+        from .diagnostics import (
+            SwingDiagnosticsRecorder,
+            write_swing_diagnostics_report,
         )
+
+        recorder = SwingDiagnosticsRecorder(request.user_video)
+        self._diagnostics_recorder = recorder
+        try:
+            swings = detect_comparison_user_swings(
+                request.user_video,
+                request.detection_config,
+                frame_timeline=user_source.inspected_media,
+                diagnostics=recorder,
+            )
+            _LOG.info(
+                "Finished swing detection: %d accepted swings in %.1fs",
+                len(swings),
+                monotonic() - started,
+            )
+            return swings
+        except BaseException:
+            write_swing_diagnostics_report(
+                request.diagnostic_report,
+                recorder.snapshot(),
+            )
+            _LOG.info("Wrote swing diagnostics to %s", request.diagnostic_report)
+            raise
+
+    def write_swing_diagnostics(
+        self,
+        windows: tuple[SelectedSourceWindow, ...],
+        pro_shot_type: str,
+        diagnostic_report: Path | None,
+    ) -> None:
+        """Finish and publish an optional report before comparison rendering."""
+
+        if diagnostic_report is None or self._diagnostics_recorder is None:
+            return
+        from .diagnostics import write_swing_diagnostics_report
+
+        rendered = {
+            window.swing_ordinal
+            for window in windows
+            if window.swing_ordinal is not None
+        }
+        self._diagnostics_recorder.record_planning(rendered, pro_shot_type)
+        snapshot = self._diagnostics_recorder.snapshot()
+        for candidate in snapshot.candidates:
+            if candidate.contact_frame_ordinal is not None:
+                _LOG.info(
+                    "Audio candidate %d final disposition: %s (%s)",
+                    candidate.audio_candidate_index,
+                    candidate.disposition,
+                    candidate.reason,
+                )
+        write_swing_diagnostics_report(diagnostic_report, snapshot)
+        _LOG.info("Wrote swing diagnostics to %s", diagnostic_report)
+        self._diagnostics_recorder = None
 
     def create_player_locator(self, device: str | None) -> PlayerLocator:
         from utilities import PersonDetector
 
-        return PersonDetector(resolve_device(device))
+        resolved_device = resolve_device(device)
+        _LOG.info("Loading player locator on %s", resolved_device)
+        return PersonDetector(resolved_device)
 
     def observe_players(
         self, window: SelectedSourceWindow, locator: PlayerLocator
     ) -> tuple[PlayerObservation, ...]:
         from .media import observe_players
 
-        return observe_players(window, locator)
+        role = "professional" if window.swing_ordinal is None else f"user swing {window.swing_ordinal}"
+        _LOG.info(
+            "Locating player for %s across %d source frames",
+            role,
+            len(window.normalized_frames),
+        )
+        started = monotonic()
+        observations = observe_players(window, locator)
+        _LOG.info(
+            "Finished player location for %s: %d observations in %.1fs",
+            role,
+            len(observations),
+            monotonic() - started,
+        )
+        return observations
 
     def render_artifacts(
         self,
@@ -200,10 +321,14 @@ class SystemComparisonDependencies:
     ) -> None:
         from .media import render_comparison, render_compilation
 
+        _LOG.info("Rendering comparison compilation with %d swing(s): %s", len(plans), primary)
+        started = monotonic()
         render_compilation(plans, primary)
+        _LOG.info("Finished comparison compilation in %.1fs", monotonic() - started)
         for plan, clip in zip(plans, clips):
             if plan.artifact.path != clip:
                 raise ValueError("clip artifact does not match its render plan")
+            _LOG.info("Rendering optional comparison clip: %s", clip)
             render_comparison(plan)
 
 
@@ -263,6 +388,8 @@ def _preflight(request: ComparisonRequest, dependencies: ComparisonDependencies)
         raise InvalidComparisonRequest("slow motion must be in (0, 1]")
     if request.shot_type_model is not None and request.shot_model is None:
         raise InvalidComparisonRequest("shot type model requires a shot model")
+    if request.diagnostics_only and request.diagnostic_report is None:
+        raise InvalidComparisonRequest("diagnostics-only mode requires an HTML report path")
     for model in (
         request.audio_model,
         request.shot_model,
@@ -280,21 +407,27 @@ def _preflight(request: ComparisonRequest, dependencies: ComparisonDependencies)
         if not dependencies.executable_exists(executable):
             raise InvalidComparisonRequest(f"required executable not found: {executable}")
 
-    primary = primary_output_path(request)
-    clips_directory = primary.with_name(f"{primary.stem}_clips")
-    collisions = tuple(
-        path
-        for path in (primary, clips_directory if request.clips else None)
-        if path is not None and path.exists()
+    if not request.diagnostics_only:
+        primary = primary_output_path(request)
+        clips_directory = primary.with_name(f"{primary.stem}_clips")
+        collisions = tuple(
+            path
+            for path in (primary, clips_directory if request.clips else None)
+            if path is not None and path.exists()
+        )
+        if collisions:
+            raise OutputCollision(collisions)
+    destination = (
+        request.diagnostic_report.parent
+        if request.diagnostics_only and request.diagnostic_report is not None
+        else request.output_directory
     )
-    if collisions:
-        raise OutputCollision(collisions)
-    writable_parent = _nearest_existing_parent(request.output_directory)
+    writable_parent = _nearest_existing_parent(destination)
     if not writable_parent.is_dir() or not os.access(
         writable_parent, os.W_OK | os.X_OK
     ):
         raise InvalidComparisonRequest(
-            f"output destination is not writable: {request.output_directory}"
+            f"output destination is not writable: {destination}"
         )
 
 
@@ -329,7 +462,7 @@ def compare_videos(
         )
 
     try:
-        swings = dependencies.detect_swings(request)
+        swings = dependencies.detect_swings(request, user_source)
         windows = select_comparison_windows(
             user_source=user_source,
             user_swings=swings,
@@ -339,6 +472,16 @@ def compare_videos(
         )
     except Exception as error:
         raise ComparisonProcessingFailed("swing detection", str(error)) from error
+    diagnostics_writer = getattr(dependencies, "write_swing_diagnostics", None)
+    if callable(diagnostics_writer):
+        diagnostics_writer(
+            windows.user,
+            selection.shot_type,
+            request.diagnostic_report,
+        )
+    if request.diagnostics_only:
+        assert request.diagnostic_report is not None
+        return ComparisonResult((request.diagnostic_report,), len(windows.user))
     if not windows.user:
         return ComparisonResult((), 0)
 

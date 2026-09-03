@@ -4,23 +4,29 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections import Counter
 from pathlib import Path
 import subprocess
 import tempfile
 import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
+from typing import TYPE_CHECKING, Callable, Iterable
 
 from PIL import Image
 import torchaudio
 
 from utilities import PersonDetector, expand_box
 
+if TYPE_CHECKING:
+    from .comparison.diagnostics import SwingDiagnosticsRecorder
+
 if __package__:
     from .subprocess_utils import run_command
     from .visual_contact import (
+        FrameTimeline,
         SourceFrameIdentity,
         StockVisualContactSelector,
         VisualContactSelector,
@@ -28,6 +34,7 @@ if __package__:
 else:
     from subprocess_utils import run_command
     from visual_contact import (
+        FrameTimeline,
         SourceFrameIdentity,
         StockVisualContactSelector,
         VisualContactSelector,
@@ -45,7 +52,12 @@ DEFAULT_STRIDE_S = 0.05
 SAMPLE_RATE = 48_000
 WINDOW_DURATION = 0.25
 PEAK_THRESHOLD = 0.5
-PEAK_MIN_SEPARATION = 2.0
+INITIAL_PEAK_MIN_SEPARATION = 0.25
+BOUNCE_GAP_MIN = 0.35
+BOUNCE_GAP_MAX = 0.75
+FINAL_PEAK_MIN_SEPARATION = 1.25
+BOUNCE_COLLAPSE_REASON = "bounce normalization: earlier short-gap precursor"
+FINAL_SUPPRESSION_REASON = "final audio suppression: lower-scoring nearby candidate"
 BATCH_SIZE = 128
 PRE_CONTACT_BUFFER = 1.20
 POST_CONTACT_BUFFER = 0.70
@@ -58,6 +70,15 @@ __all__ = [
     "detect_comparison_user_swings",
     "detect_user_swings",
 ]
+
+
+@dataclass(frozen=True)
+class AudioCandidate:
+    """One scored audio event carried through swing classification."""
+
+    timestamp: float
+    score: float
+    source_index: int
 
 
 @dataclass(frozen=True)
@@ -90,6 +111,94 @@ class LegacySwingDetails:
     start: float
     end: float
     crop: tuple[int, int, int, int]
+    audio_candidate_index: int | None = None
+
+
+def _suppress_audio_candidates(
+    candidates: tuple[AudioCandidate, ...] | list[AudioCandidate],
+    minimum_separation: float,
+) -> tuple[tuple[AudioCandidate, ...], tuple[AudioCandidate, ...]]:
+    """Prefer strong audio events while retaining exact-boundary neighbors."""
+
+    preferred = sorted(
+        candidates,
+        key=lambda candidate: (
+            -candidate.score,
+            candidate.timestamp,
+            candidate.source_index,
+        ),
+    )
+    kept: list[AudioCandidate] = []
+    omitted: list[AudioCandidate] = []
+    for candidate in preferred:
+        if all(
+            _at_least(
+                abs(candidate.timestamp - selected.timestamp),
+                minimum_separation,
+            )
+            for selected in kept
+        ):
+            kept.append(candidate)
+        else:
+            omitted.append(candidate)
+    return (
+        tuple(
+            sorted(
+                kept,
+                key=lambda candidate: (candidate.timestamp, candidate.source_index),
+            )
+        ),
+        tuple(
+            sorted(
+                omitted,
+                key=lambda candidate: (candidate.timestamp, candidate.source_index),
+            )
+        ),
+    )
+
+
+def _at_least(value: float, boundary: float) -> bool:
+    return value > boundary or math.isclose(
+        value,
+        boundary,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    )
+
+
+def _at_most(value: float, boundary: float) -> bool:
+    return value < boundary or math.isclose(
+        value,
+        boundary,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    )
+
+
+def _normalize_bounce_candidates(
+    candidates: tuple[AudioCandidate, ...] | list[AudioCandidate],
+) -> tuple[tuple[AudioCandidate, ...], tuple[AudioCandidate, ...]]:
+    """Collapse timing-only bounce-like chains to their final audio event."""
+
+    if not candidates:
+        return (), ()
+    chronological = sorted(
+        candidates,
+        key=lambda candidate: (candidate.timestamp, candidate.source_index),
+    )
+    kept: list[AudioCandidate] = []
+    omitted: list[AudioCandidate] = []
+    chain_tail = chronological[0]
+    for candidate in chronological[1:]:
+        gap = candidate.timestamp - chain_tail.timestamp
+        if _at_least(gap, BOUNCE_GAP_MIN) and _at_most(gap, BOUNCE_GAP_MAX):
+            omitted.append(chain_tail)
+            chain_tail = candidate
+        else:
+            kept.append(chain_tail)
+            chain_tail = candidate
+    kept.append(chain_tail)
+    return tuple(kept), tuple(omitted)
 
 
 def resolve_device(device: str | None) -> str:
@@ -136,7 +245,9 @@ class PopDetector:
         self.stride_s = stride_s
         self.device, self.learner = _load_model(model_path, device)
 
-    def find_impacts(self, wav_path: Path) -> list[float]:
+    def score_windows(self, wav_path: Path) -> list[AudioCandidate]:
+        """Score every dense 250 ms audio window before event suppression."""
+
         import pandas as pd
         import torch
 
@@ -163,27 +274,35 @@ class PopDetector:
             predictions, _ = self.learner.get_preds(dl=data_loader, reorder=False)
             probabilities = predictions[:, 1]
 
-        candidates: list[tuple[float, float]] = []
-        for index, probability in enumerate(probabilities):
-            score = float(probability)
-            if score > PEAK_THRESHOLD:
-                center = index * self.stride_s + (WINDOW_DURATION / 2)
-                candidates.append((center, score))
+        return [
+            AudioCandidate(
+                index * self.stride_s + (WINDOW_DURATION / 2),
+                float(probability),
+                index,
+            )
+            for index, probability in enumerate(probabilities)
+        ]
 
-        candidates.sort(key=lambda candidate: candidate[1], reverse=True)
-        kept: list[tuple[float, float]] = []
-        for timestamp, score in candidates:
-            if all(
-                abs(timestamp - kept_timestamp) >= PEAK_MIN_SEPARATION
-                for kept_timestamp, _ in kept
-            ):
-                kept.append((timestamp, score))
-        kept.sort(key=lambda candidate: candidate[0])
+    def find_candidates(self, wav_path: Path) -> list[AudioCandidate]:
+        candidates = [
+            candidate
+            for candidate in self.score_windows(wav_path)
+            if candidate.score > PEAK_THRESHOLD
+        ]
 
-        impacts = [timestamp for timestamp, _ in kept]
-        _LOG.info("Detected %d audio peaks", len(impacts))
-        _LOG.info("Detected peaks: " + ", ".join(f"{impact:.3f}" for impact in impacts))
-        return impacts
+        kept, _ = _suppress_audio_candidates(
+            candidates,
+            INITIAL_PEAK_MIN_SEPARATION,
+        )
+        _LOG.info("Detected %d initial audio event candidates", len(kept))
+        _LOG.info(
+            "Initial audio event candidates: %s",
+            ", ".join(
+                f"{candidate.timestamp:.3f}s ({candidate.score:.3f})"
+                for candidate in kept
+            ),
+        )
+        return list(kept)
 
 
 class ShotDetector:
@@ -292,15 +411,37 @@ def _detect_user_swings_with_details(
     media_info: dict,
     *,
     report_progress: bool,
+    diagnostics: SwingDiagnosticsRecorder | None = None,
+    initial_candidates: Iterable[AudioCandidate] | None = None,
+    frame_extractor: Callable[[Path, float, Path], None] | None = None,
 ) -> tuple[LegacySwingDetails, ...]:
     selected_device = resolve_device(detection_config.device)
     with tempfile.TemporaryDirectory() as temporary_directory:
         temporary_path = Path(temporary_directory)
-        wav_path = temporary_path / "audio.wav"
-        extract_audio(user_video, wav_path)
-
-        pop_detector = PopDetector(detection_config.audio_model, device=selected_device)
-        impact_times = pop_detector.find_impacts(wav_path)
+        if initial_candidates is None:
+            wav_path = temporary_path / "audio.wav"
+            extract_audio(user_video, wav_path)
+            pop_detector = PopDetector(
+                detection_config.audio_model,
+                device=selected_device,
+            )
+            candidates = pop_detector.find_candidates(wav_path)
+        else:
+            candidates = list(initial_candidates)
+        extract_candidate_frame = frame_extractor or extract_frame
+        if diagnostics is not None:
+            diagnostics.record_audio_candidates(candidates)
+        event_candidates, bounce_precursors = _normalize_bounce_candidates(
+            candidates
+        )
+        for precursor in bounce_precursors:
+            _LOG.info(
+                "Audio candidate %d at %.3fs omitted by bounce normalization",
+                precursor.source_index,
+                precursor.timestamp,
+            )
+            if diagnostics is not None:
+                diagnostics.omit(precursor.source_index, BOUNCE_COLLAPSE_REASON)
         person_detector = PersonDetector(selected_device)
         shot_detector = (
             ShotDetector(detection_config.shot_model, device=selected_device)
@@ -316,15 +457,19 @@ def _detect_user_swings_with_details(
             else None
         )
 
-        accepted: list[LegacySwingDetails] = []
+        classifier_accepted: list[tuple[AudioCandidate, LegacySwingDetails]] = []
         processing_times: list[float] = []
-        for candidate_index, contact in enumerate(impact_times):
+        for candidate in event_candidates:
+            candidate_index = candidate.source_index
+            contact = candidate.timestamp
             started_at = time.perf_counter()
             frame_path = temporary_path / f"impact_{candidate_index}.jpg"
-            extract_frame(user_video, contact, frame_path)
+            extract_candidate_frame(user_video, contact, frame_path)
             box = person_detector.find_box(frame_path)
             if box is None:
                 _LOG.info("No person found for impact %d", candidate_index)
+                if diagnostics is not None:
+                    diagnostics.omit(candidate_index, "no person found")
                 continue
             crop = expand_box(box, media_info["resolution"])
             shot_type = None
@@ -335,21 +480,38 @@ def _detect_user_swings_with_details(
                     )
                     if not shot_detector.is_shot(cropped):
                         _LOG.info("Impact %d not a swing", candidate_index)
+                        if diagnostics is not None:
+                            diagnostics.omit(
+                                candidate_index,
+                                "swing classifier: not a swing",
+                            )
                         continue
                     if shot_type_classifier is not None:
                         shot_type = shot_type_classifier.predict_label(cropped)
+            _LOG.info(
+                "Audio candidate %d at %.3fs accepted by classifiers (shot type: %s)",
+                candidate_index,
+                contact,
+                shot_type or "unclassified",
+            )
+            if diagnostics is not None:
+                diagnostics.accept_swing_candidate(candidate_index, shot_type)
             detected_swing = DetectedSwing(
-                ordinal=len(accepted),
+                ordinal=len(classifier_accepted),
                 contact_timestamp=_exact_contact_timestamp(contact),
                 shot_type=shot_type,
             )
-            accepted.append(
-                LegacySwingDetails(
-                    swing=detected_swing,
-                    legacy_contact=contact,
-                    start=contact - PRE_CONTACT_BUFFER,
-                    end=contact + POST_CONTACT_BUFFER,
-                    crop=tuple(crop),
+            classifier_accepted.append(
+                (
+                    candidate,
+                    LegacySwingDetails(
+                        swing=detected_swing,
+                        legacy_contact=contact,
+                        start=contact - PRE_CONTACT_BUFFER,
+                        end=contact + POST_CONTACT_BUFFER,
+                        crop=tuple(crop),
+                        audio_candidate_index=candidate_index,
+                    ),
                 )
             )
             elapsed = time.perf_counter() - started_at
@@ -367,7 +529,34 @@ def _detect_user_swings_with_details(
                 f"({len(processing_times)} peaks)"
             )
 
-    return tuple(accepted)
+        surviving_candidates, final_omissions = _suppress_audio_candidates(
+            [candidate for candidate, _ in classifier_accepted],
+            FINAL_PEAK_MIN_SEPARATION,
+        )
+        for candidate in final_omissions:
+            _LOG.info(
+                "Audio candidate %d at %.3fs omitted by final 1.25s suppression",
+                candidate.source_index,
+                candidate.timestamp,
+            )
+            if diagnostics is not None:
+                diagnostics.omit(candidate.source_index, FINAL_SUPPRESSION_REASON)
+        details_by_index = {
+            candidate.source_index: detail
+            for candidate, detail in classifier_accepted
+        }
+        accepted = tuple(
+            replace(
+                details_by_index[candidate.source_index],
+                swing=replace(
+                    details_by_index[candidate.source_index].swing,
+                    ordinal=ordinal,
+                ),
+            )
+            for ordinal, candidate in enumerate(surviving_candidates)
+        )
+
+    return accepted
 
 
 def detect_user_swings(
@@ -388,7 +577,9 @@ def detect_comparison_user_swings(
     user_video: Path,
     detection_config: DetectionConfig,
     *,
+    frame_timeline: FrameTimeline | None = None,
     contact_selector: VisualContactSelector | None = None,
+    diagnostics: SwingDiagnosticsRecorder | None = None,
 ) -> tuple[DetectedSwing, ...]:
     """Detect accepted swings and replace audio timing with visual contact.
 
@@ -402,6 +593,7 @@ def detect_comparison_user_swings(
         detection_config,
         probe_video(user_video),
         report_progress=False,
+        diagnostics=diagnostics,
     )
     if contact_selector is None:
         ranker = None
@@ -412,18 +604,70 @@ def detect_comparison_user_swings(
         selector = StockVisualContactSelector(
             device=detection_config.device,
             ranker=ranker,
+            frame_timeline=frame_timeline,
         )
     else:
         selector = contact_selector
+    candidate_timestamps = tuple(
+        _exact_contact_timestamp(detail.legacy_contact) for detail in details
+    )
+    select_many = getattr(type(selector), "select_many", None)
+    if callable(select_many):
+        selections = select_many(selector, user_video, candidate_timestamps)
+    else:
+        selections = tuple(
+            selector.select(user_video, candidate_timestamp)
+            for candidate_timestamp in candidate_timestamps
+        )
+    if len(selections) != len(details):
+        raise ValueError("visual contact selector returned the wrong result count")
     accepted: list[DetectedSwing] = []
     omissions: Counter[str] = Counter()
-    for detail in details:
-        selection = selector.select(
-            user_video, _exact_contact_timestamp(detail.legacy_contact)
+    for detail, selection in zip(details, selections, strict=True):
+        candidate_index = (
+            detail.audio_candidate_index
+            if detail.audio_candidate_index is not None
+            else detail.swing.ordinal
         )
+        if diagnostics is not None:
+            diagnostics.record_visual_selection(
+                candidate_index,
+                selection,
+                None if selection.frame is None else len(accepted),
+            )
         if selection.frame is None:
-            omissions[selection.omission_reason or "visual contact unavailable"] += 1
+            reason = selection.omission_reason or "visual contact unavailable"
+            omissions[reason] += 1
+            decision = selection.diagnostics
+            deterministic = (
+                None if decision is None else decision.deterministic.selected_frame
+            )
+            temporal = (
+                None
+                if decision is None or decision.temporal_prediction is None
+                else decision.temporal_prediction.frame_ordinal
+            )
+            _LOG.info(
+                "Audio candidate %d at %.3fs omitted by visual contact: %s "
+                "(deterministic frame=%s, temporal frame=%s, plausible=%s)",
+                candidate_index,
+                detail.legacy_contact,
+                reason,
+                deterministic,
+                temporal,
+                selection.plausible_frames or "none",
+            )
             continue
+        _LOG.info(
+            "Audio candidate %d at %.3fs chose contact frame %d at %.6fs "
+            "(confidence=%.3f, plausible=%s)",
+            candidate_index,
+            detail.legacy_contact,
+            selection.frame.ordinal,
+            float(selection.frame.timestamp),
+            selection.contact_confidence,
+            selection.plausible_frames or "none",
+        )
         accepted.append(
             DetectedSwing(
                 ordinal=len(accepted),
