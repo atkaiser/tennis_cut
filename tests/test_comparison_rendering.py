@@ -16,18 +16,26 @@ from PIL import Image, ImageDraw, ImageStat
 
 from tennis_cut.comparison.cli import main
 from tennis_cut.comparison.media import (
+    DecodedFrameWorkspace,
+    _decode_frames,
+    _encode_event_images,
+    _render_panel,
     inspect_comparison_source,
     observe_players,
-    render_comparison,
-    render_compilation,
+    render_comparison_artifacts,
 )
 from tennis_cut.comparison.planning import (
     ComparisonRenderPlan,
     ComparisonSource,
+    NormalizedFrame,
     PlayerObservation,
     SelectedSourceWindow,
 )
-from tennis_cut.comparison.pro_selection import InspectedMedia, ProSelection
+from tennis_cut.comparison.pro_selection import (
+    DecodedFrame,
+    InspectedMedia,
+    ProSelection,
+)
 from tennis_cut.comparison.workflow import ComparisonRequest
 from tennis_cut.swing_detection import DetectedSwing
 
@@ -156,6 +164,8 @@ class GeneratedWorkflowDependencies:
         }
         self.pro_path = pro_path
         self.rendered_plans: list[tuple[ComparisonRenderPlan, ...]] = []
+        self.compilation_decode_sources: list[Path] = []
+        self.compilation_panel_count = 0
 
     def executable_exists(self, name: str) -> bool:
         return True
@@ -200,11 +210,19 @@ class GeneratedWorkflowDependencies:
         clips: tuple[Path, ...],
     ) -> None:
         self.rendered_plans.append(plans)
-        render_compilation(plans, primary)
-        for plan, clip in zip(plans, clips):
-            if plan.artifact.path != clip:
-                raise AssertionError("workflow changed the requested clip path")
-            render_comparison(plan)
+        with (
+            patch(
+                "tennis_cut.comparison.media._decode_frames",
+                wraps=_decode_frames,
+            ) as decode,
+            patch(
+                "tennis_cut.comparison.media._render_panel",
+                wraps=_render_panel,
+            ) as render_panel,
+        ):
+            render_comparison_artifacts(plans, primary, clips)
+        self.compilation_decode_sources = [call.args[0] for call in decode.call_args_list]
+        self.compilation_panel_count = render_panel.call_count
 
 
 def probe_output(video: Path) -> dict:
@@ -229,6 +247,87 @@ def probe_output(video: Path) -> dict:
 
 
 class GeneratedMediaRenderingTests(unittest.TestCase):
+    def test_player_windows_share_one_decode_with_render_and_one_sparse_batch(
+        self,
+    ) -> None:
+        frames = tuple(
+            DecodedFrame(0, ordinal, ordinal, Fraction(1, 120))
+            for ordinal in range(379)
+        )
+        source = ComparisonSource(
+            Path("user.mov"), 3840, 2160, InspectedMedia(frames)
+        )
+
+        def window(start: int, contact: int, end: int) -> SelectedSourceWindow:
+            return SelectedSourceWindow(
+                source=source,
+                swing_ordinal=contact,
+                contact_timestamp=frames[contact].timestamp,
+                contact_frame=frames[contact],
+                normalized_frames=tuple(
+                    NormalizedFrame(
+                        frames[ordinal], Fraction(ordinal - contact, 120)
+                    )
+                    for ordinal in range(start, end + 1)
+                ),
+            )
+
+        windows = (window(0, 144, 228), window(150, 294, 378))
+
+        class BatchLocator:
+            def __init__(self) -> None:
+                self.calls: list[tuple[Path, ...]] = []
+
+            def find_box(self, _image: Path):
+                raise AssertionError("batched locator must not fall back")
+
+            def find_boxes(self, images: tuple[Path, ...]):
+                self.calls.append(images)
+                return tuple((10, 20, 110, 220) for _image in images)
+
+        locator = BatchLocator()
+        workspace = DecodedFrameWorkspace()
+        try:
+            with (
+                patch(
+                    "tennis_cut.comparison.media._decode_frames",
+                    side_effect=lambda _source, ordinals, _directory: {
+                        ordinal: Path(f"frame-{ordinal}.png") for ordinal in ordinals
+                    },
+                ) as decode,
+                patch(
+                    "tennis_cut.comparison.media.render_comparison_artifacts"
+                ) as render,
+            ):
+                observations = workspace.observe_players_many(windows, locator)
+                workspace.render_artifacts((), Path("comparison.mp4"), ())
+        finally:
+            workspace.close()
+
+        decode.assert_called_once()
+        decoded_ordinals = decode.call_args.args[1]
+        self.assertEqual(len(decoded_ordinals), 379)
+        self.assertEqual(len(locator.calls), 1)
+        self.assertLessEqual(len(locator.calls[0]), 42)
+        render.assert_called_once()
+        self.assertIn(source.path, render.call_args.kwargs["decoded_sources"])
+        self.assertTrue({0, 144, 228}.issubset({item.frame_ordinal for item in observations[0]}))
+        self.assertTrue({150, 294, 378}.issubset({item.frame_ordinal for item in observations[1]}))
+
+    def test_encoder_handles_large_materialized_compilation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            events = directory / "events"
+            events.mkdir()
+            Image.new("RGB", (16, 16), "black").save(
+                events / "event_000000000.png"
+            )
+            output = directory / "comparison.mp4"
+
+            _encode_event_images(events, list(range(7_921)), 60, output)
+
+            self.assertTrue(output.is_file())
+
     def test_complete_cli_workflow_with_generated_media(self) -> None:
         started = time.monotonic()
         with tempfile.TemporaryDirectory() as directory_name:
@@ -310,6 +409,35 @@ class GeneratedMediaRenderingTests(unittest.TestCase):
                     self.assertEqual(dependencies.device, "cpu")
                     self.assertEqual(len(dependencies.rendered_plans), 1)
                     plans = dependencies.rendered_plans[0]
+                    self.assertEqual(
+                        dependencies.compilation_decode_sources,
+                        [user_path, pro_path],
+                    )
+                    expected_panels = {
+                        (
+                            "user",
+                            event.user_frame.ordinal,
+                            plan.user.crop,
+                            plan.layout.user_panel.width,
+                            plan.layout.user_panel.height,
+                        )
+                        for plan in plans
+                        for event in plan.events
+                    } | {
+                        (
+                            "pro",
+                            event.pro_frame.ordinal,
+                            plan.pro.crop,
+                            plan.layout.pro_panel.width,
+                            plan.layout.pro_panel.height,
+                        )
+                        for plan in plans
+                        for event in plan.events
+                    }
+                    self.assertEqual(
+                        dependencies.compilation_panel_count,
+                        len(expected_panels),
+                    )
                     self.assertEqual(
                         [plan.user.window.swing_ordinal for plan in plans], [2, 7]
                     )

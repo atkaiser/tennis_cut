@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Tuple
+from typing import Sequence, Tuple
 
 
 def probe_duration(path: Path) -> float:
@@ -32,10 +32,28 @@ class PersonDetector:
 
     def find_box(self, img_path: Path) -> Tuple[int, int, int, int] | None:
         """Return the largest person box as (x1, y1, x2, y2) integers."""
-        results = self.model.predict(
-            str(img_path), classes=0, device=self.device, verbose=False
-        )
-        boxes = results[0].boxes
+        return self.find_boxes((img_path,))[0]
+
+    def find_boxes(
+        self, img_paths: Sequence[Path], *, batch_size: int = 16
+    ) -> tuple[Tuple[int, int, int, int] | None, ...]:
+        """Locate players in bounded batches so model setup is shared."""
+
+        found: list[Tuple[int, int, int, int] | None] = []
+        for start in range(0, len(img_paths), batch_size):
+            chunk = img_paths[start : start + batch_size]
+            results = self.model.predict(
+                [str(path) for path in chunk],
+                classes=0,
+                device=self.device,
+                verbose=False,
+                batch=batch_size,
+            )
+            found.extend(self._largest_person(result.boxes) for result in results)
+        return tuple(found)
+
+    @staticmethod
+    def _largest_person(boxes: object) -> Tuple[int, int, int, int] | None:
         if boxes is None or boxes.xyxy.numel() == 0:
             return None
         xyxy = boxes.xyxy.cpu().numpy()

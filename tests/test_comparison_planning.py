@@ -11,6 +11,7 @@ from tennis_cut.comparison.planning import (
     Rectangle,
     SelectedComparisonWindows,
     UnrepresentableTimeline,
+    UnrenderablePlayerCrop,
     build_render_plan,
     prepare_source_window,
     select_comparison_windows,
@@ -299,7 +300,7 @@ class RenderPlanTests(unittest.TestCase):
         )
 
     def test_fails_instead_of_shrinking_the_required_crop_margin(self) -> None:
-        with self.assertRaisesRegex(ValueError, "25% margin"):
+        with self.assertRaisesRegex(UnrenderablePlayerCrop, "25% margin"):
             prepare_source_window(
                 self.windows.user[0],
                 (PlayerObservation(0, Rectangle(0, 0, 960, 900)),),

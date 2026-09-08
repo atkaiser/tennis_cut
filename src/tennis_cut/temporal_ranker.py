@@ -13,19 +13,70 @@ import math
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from .visual_contact import FEATURE_VERSION, TemporalFeatures, TemporalPrediction, VisualFrame, extract_temporal_features
+from .visual_contact import (
+    FEATURE_VERSION,
+    KINEMATIC_FEATURES_PER_FRAME,
+    KINEMATIC_FEATURE_VERSION,
+    TemporalFeatures,
+    TemporalPrediction,
+    VisualFrame,
+    extract_kinematic_features,
+    extract_temporal_features,
+)
 
 SCORER_VERSION = 3
 ARTIFACT_VERSION = 1
 CONTEXT_RADIUS = 4
 FEATURES_PER_FRAME = 7
 TEMPORAL_VECTOR_SIZE = (CONTEXT_RADIUS * 2 + 1) * FEATURES_PER_FRAME
+KINEMATIC_VECTOR_SIZE = (
+    (CONTEXT_RADIUS * 2 + 1) * KINEMATIC_FEATURES_PER_FRAME
+)
 EXACT_AGREEMENT_BONUS = 0.12
 HGB_EXACT_AGREEMENT_BONUS = 0.25
 
 
 class TemporalRankerArtifactError(ValueError):
     """Stable error raised for an unusable ranker artifact."""
+
+
+def _validate_trees(
+    trees: tuple[tuple["HistGradientBoostingNode", ...], ...], vector_size: int
+) -> None:
+    if not trees or any(not tree for tree in trees):
+        raise TemporalRankerArtifactError("invalid histogram gradient boosting trees")
+    for tree in trees:
+        if any(
+            not math.isfinite(node.value) or not math.isfinite(node.threshold)
+            for node in tree
+        ):
+            raise TemporalRankerArtifactError(
+                "invalid histogram gradient boosting tree values"
+            )
+        visited: set[int] = set()
+        active: set[int] = set()
+
+        def visit(node_index: int) -> None:
+            if not 0 <= node_index < len(tree) or node_index in active:
+                raise TemporalRankerArtifactError(
+                    "invalid histogram gradient boosting tree indexes"
+                )
+            if node_index in visited:
+                return
+            node = tree[node_index]
+            visited.add(node_index)
+            if node.is_leaf:
+                return
+            if not 0 <= node.feature_index < vector_size:
+                raise TemporalRankerArtifactError(
+                    "invalid histogram gradient boosting tree feature index"
+                )
+            active.add(node_index)
+            visit(node.left)
+            visit(node.right)
+            active.remove(node_index)
+
+        visit(0)
 
 
 @dataclass(frozen=True)
@@ -53,47 +104,15 @@ class HistGradientBoostingArtifact:
     scorer_version: int = SCORER_VERSION
     exact_agreement_bonus: float = HGB_EXACT_AGREEMENT_BONUS
     artifact_version: int = ARTIFACT_VERSION
+    vector_size: int = TEMPORAL_VECTOR_SIZE
 
     def __post_init__(self) -> None:
-        if not self.trees or any(not tree for tree in self.trees):
-            raise TemporalRankerArtifactError("invalid histogram gradient boosting trees")
+        _validate_trees(self.trees, self.vector_size)
         if not self.supported_shot_type:
             raise TemporalRankerArtifactError("invalid supported shot type")
         values = (self.baseline, self.operating_threshold, self.exact_agreement_bonus)
         if any(not math.isfinite(value) for value in values):
             raise TemporalRankerArtifactError("invalid histogram gradient boosting parameters")
-        for tree in self.trees:
-            if any(
-                not math.isfinite(node.value) or not math.isfinite(node.threshold)
-                for node in tree
-            ):
-                raise TemporalRankerArtifactError(
-                    "invalid histogram gradient boosting tree values"
-                )
-            visited: set[int] = set()
-            active: set[int] = set()
-
-            def visit(node_index: int) -> None:
-                if not 0 <= node_index < len(tree) or node_index in active:
-                    raise TemporalRankerArtifactError(
-                        "invalid histogram gradient boosting tree indexes"
-                    )
-                if node_index in visited:
-                    return
-                node = tree[node_index]
-                visited.add(node_index)
-                if node.is_leaf:
-                    return
-                if not 0 <= node.feature_index < TEMPORAL_VECTOR_SIZE:
-                    raise TemporalRankerArtifactError(
-                        "invalid histogram gradient boosting tree feature index"
-                    )
-                active.add(node_index)
-                visit(node.left)
-                visit(node.right)
-                active.remove(node_index)
-
-            visit(0)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -129,6 +148,57 @@ class HistGradientBoostingArtifact:
         path.write_text(json.dumps(self.to_dict(), separators=(",", ":")) + "\n")
 
 
+@dataclass(frozen=True)
+class KinematicEnsembleArtifact:
+    """One portable package containing both validated kinematic rankers."""
+
+    ordinary: HistGradientBoostingArtifact
+    family_balanced: HistGradientBoostingArtifact
+    ordinary_weight: float
+    supported_shot_type: str
+    operating_threshold: float = 0.0
+    feature_version: int = FEATURE_VERSION
+    kinematic_feature_version: int = KINEMATIC_FEATURE_VERSION
+    scorer_version: int = SCORER_VERSION
+    artifact_version: int = ARTIFACT_VERSION
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.ordinary_weight <= 1.0:
+            raise TemporalRankerArtifactError("invalid ensemble weight")
+        if not self.supported_shot_type:
+            raise TemporalRankerArtifactError("invalid supported shot type")
+        if not math.isfinite(self.operating_threshold):
+            raise TemporalRankerArtifactError("invalid operating threshold")
+        _validate_trees(self.ordinary.trees, KINEMATIC_VECTOR_SIZE)
+        _validate_trees(self.family_balanced.trees, KINEMATIC_VECTOR_SIZE)
+
+    @staticmethod
+    def _component(artifact: HistGradientBoostingArtifact) -> dict[str, object]:
+        return {
+            "baseline": artifact.baseline,
+            "trees": artifact.to_dict()["model"]["trees"],  # type: ignore[index]
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "artifact_version": self.artifact_version,
+            "feature_version": self.feature_version,
+            "kinematic_feature_version": self.kinematic_feature_version,
+            "scorer_version": self.scorer_version,
+            "supported_shot_type": self.supported_shot_type,
+            "operating_threshold": self.operating_threshold,
+            "model": {
+                "type": "kinematic-ensemble",
+                "ordinary_weight": self.ordinary_weight,
+                "ordinary": self._component(self.ordinary),
+                "family_balanced": self._component(self.family_balanced),
+            },
+        }
+
+    def save(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.to_dict(), separators=(",", ":")) + "\n")
+
 def temporal_feature_vector(features: Sequence[TemporalFeatures], index: int) -> tuple[float, ...]:
     """Return the documented 9-frame, 63-value clamped context vector."""
 
@@ -149,6 +219,21 @@ def all_temporal_feature_vectors(
     """Extract one clamped context vector for every existing source frame."""
 
     return tuple(temporal_feature_vector(features, index) for index in range(len(features)))
+
+
+def all_kinematic_feature_vectors(
+    frames: tuple[VisualFrame, ...],
+) -> tuple[tuple[float, ...], ...]:
+    """Extract one clamped 234-value kinematic context per source frame."""
+
+    rows = extract_kinematic_features(frames)
+    vectors: list[tuple[float, ...]] = []
+    for index in range(len(rows)):
+        values: list[float] = []
+        for offset in range(-CONTEXT_RADIUS, CONTEXT_RADIUS + 1):
+            values.extend(rows[min(len(rows) - 1, max(0, index + offset))])
+        vectors.append(tuple(values))
+    return tuple(vectors)
 
 
 def feature_vectors_from_frames(frames: tuple[VisualFrame, ...]) -> tuple[tuple[float, ...], ...]:
@@ -202,7 +287,7 @@ def load_temporal_ranker(
     expected_feature_version: int = FEATURE_VERSION,
     expected_scorer_version: int = SCORER_VERSION,
     expected_shot_type: str = "forehand",
-) -> "LinearTemporalRanker | HistGradientBoostingTemporalRanker":
+) -> "LinearTemporalRanker | HistGradientBoostingTemporalRanker | KinematicEnsembleRanker":
     """Load and semantically validate a production artifact."""
 
     if not path.is_file():
@@ -211,19 +296,14 @@ def load_temporal_ranker(
         payload = json.loads(path.read_text())
         model = payload["model"]
         model_type = str(model["type"])
-        if model_type == "linear":
-            artifact: TemporalRankerArtifact | HistGradientBoostingArtifact = TemporalRankerArtifact(
-                tuple(float(value) for value in model["weights"]),
-                float(model["bias"]),
-                str(payload["supported_shot_type"]),
-                int(payload["feature_version"]),
-                int(payload["scorer_version"]),
-                float(payload["operating_threshold"]),
-                int(payload["artifact_version"]),
-            )
-            ranker: LinearTemporalRanker | HistGradientBoostingTemporalRanker = LinearTemporalRanker(artifact)
-        elif model_type == "hist-gradient-boosting":
-            trees = tuple(
+        artifact: (
+            TemporalRankerArtifact
+            | HistGradientBoostingArtifact
+            | KinematicEnsembleArtifact
+        )
+
+        def trees_from(value: object) -> tuple[tuple[HistGradientBoostingNode, ...], ...]:
+            return tuple(
                 tuple(
                     HistGradientBoostingNode(
                         float(node[0]),
@@ -236,11 +316,28 @@ def load_temporal_ranker(
                     )
                     for node in tree
                 )
-                for tree in model["trees"]
+                for tree in value  # type: ignore[union-attr]
             )
+
+        if model_type == "linear":
+            artifact = TemporalRankerArtifact(
+                tuple(float(value) for value in model["weights"]),
+                float(model["bias"]),
+                str(payload["supported_shot_type"]),
+                int(payload["feature_version"]),
+                int(payload["scorer_version"]),
+                float(payload["operating_threshold"]),
+                int(payload["artifact_version"]),
+            )
+            ranker: (
+                LinearTemporalRanker
+                | HistGradientBoostingTemporalRanker
+                | KinematicEnsembleRanker
+            ) = LinearTemporalRanker(artifact)
+        elif model_type == "hist-gradient-boosting":
             artifact = HistGradientBoostingArtifact(
                 float(model["baseline"]),
-                trees,
+                trees_from(model["trees"]),
                 str(payload["supported_shot_type"]),
                 float(payload["operating_threshold"]),
                 int(payload["feature_version"]),
@@ -249,6 +346,31 @@ def load_temporal_ranker(
                 int(payload["artifact_version"]),
             )
             ranker = HistGradientBoostingTemporalRanker(artifact)
+        elif model_type == "kinematic-ensemble":
+            shot_type = str(payload["supported_shot_type"])
+
+            def component(name: str) -> HistGradientBoostingArtifact:
+                values = model[name]
+                return HistGradientBoostingArtifact(
+                    float(values["baseline"]),
+                    trees_from(values["trees"]),
+                    shot_type,
+                    0.0,
+                    vector_size=KINEMATIC_VECTOR_SIZE,
+                )
+
+            artifact = KinematicEnsembleArtifact(
+                component("ordinary"),
+                component("family_balanced"),
+                float(model["ordinary_weight"]),
+                shot_type,
+                float(payload["operating_threshold"]),
+                int(payload["feature_version"]),
+                int(payload["kinematic_feature_version"]),
+                int(payload["scorer_version"]),
+                int(payload["artifact_version"]),
+            )
+            ranker = KinematicEnsembleRanker(artifact)
         else:
             raise TemporalRankerArtifactError("unsupported temporal ranker model type")
     except TemporalRankerArtifactError:
@@ -263,6 +385,11 @@ def load_temporal_ranker(
         raise TemporalRankerArtifactError("incompatible visual scorer version")
     if artifact.supported_shot_type != expected_shot_type:
         raise TemporalRankerArtifactError("unsupported temporal ranker shot type")
+    if (
+        isinstance(artifact, KinematicEnsembleArtifact)
+        and artifact.kinematic_feature_version != KINEMATIC_FEATURE_VERSION
+    ):
+        raise TemporalRankerArtifactError("incompatible kinematic feature version")
     return ranker
 
 
@@ -342,6 +469,60 @@ class HistGradientBoostingTemporalRanker:
         return TemporalPrediction(features[best].frame_ordinal, confidence)
 
 
+@dataclass(frozen=True)
+class KinematicEnsembleRanker:
+    """Dependency-free direct frame ranker selected by the bake-off."""
+
+    artifact: KinematicEnsembleArtifact
+
+    @property
+    def feature_version(self) -> int:
+        return self.artifact.feature_version
+
+    @property
+    def confidence_threshold(self) -> float:
+        return self.artifact.operating_threshold
+
+    @staticmethod
+    def _scores(
+        artifact: HistGradientBoostingArtifact,
+        vectors: tuple[tuple[float, ...], ...],
+    ) -> tuple[float, ...]:
+        ranker = HistGradientBoostingTemporalRanker(artifact)
+        return tuple(ranker._score(vector) for vector in vectors)
+
+    @staticmethod
+    def _standardize(values: tuple[float, ...]) -> tuple[float, ...]:
+        mean = sum(values) / len(values)
+        variance = sum((value - mean) ** 2 for value in values) / len(values)
+        scale = max(1e-8, math.sqrt(variance))
+        return tuple((value - mean) / scale for value in values)
+
+    def predict_frames(self, frames: tuple[VisualFrame, ...]) -> TemporalPrediction:
+        if not frames:
+            raise ValueError("cannot rank an empty frame window")
+        vectors = all_kinematic_feature_vectors(frames)
+        ordinary = self._standardize(self._scores(self.artifact.ordinary, vectors))
+        balanced = self._standardize(
+            self._scores(self.artifact.family_balanced, vectors)
+        )
+        weight = self.artifact.ordinary_weight
+        scores = tuple(
+            weight * first + (1 - weight) * second
+            for first, second in zip(ordinary, balanced, strict=True)
+        )
+        best = max(
+            range(len(scores)),
+            key=lambda index: (scores[index], -frames[index].ordinal),
+        )
+        outside = [
+            score for index, score in enumerate(scores) if abs(index - best) > 1
+        ]
+        margin = scores[best] - max(outside, default=scores[best])
+        confidence = max(0.0, min(1.0, margin))
+        return TemporalPrediction(frames[best].ordinal, confidence)
+
+
 def fit_temporal_ranker(
     samples: Iterable[tuple[Sequence[TemporalFeatures], int]],
     *,
@@ -384,12 +565,16 @@ __all__ = [
     "HistGradientBoostingArtifact",
     "HistGradientBoostingNode",
     "HistGradientBoostingTemporalRanker",
+    "KINEMATIC_VECTOR_SIZE",
+    "KinematicEnsembleArtifact",
+    "KinematicEnsembleRanker",
     "SCORER_VERSION",
     "TEMPORAL_VECTOR_SIZE",
     "LinearTemporalRanker",
     "TemporalRankerArtifact",
     "TemporalRankerArtifactError",
     "all_temporal_feature_vectors",
+    "all_kinematic_feature_vectors",
     "fit_temporal_ranker",
     "feature_vectors_from_frames",
     "load_temporal_ranker",

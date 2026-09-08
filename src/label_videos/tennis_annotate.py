@@ -30,18 +30,19 @@ appropriate key whenever the ball makes contact. Impacts are written to
 from __future__ import annotations
 
 import argparse
-import json
 import pathlib
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import List
+from typing import Any, List
 
 from PySide6.QtCore import Qt, QUrl, QTimer
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel
+
+from tennis_cut.annotation_json import load_annotation, save_annotation
 
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv"}
 
@@ -84,6 +85,12 @@ def probe_fps(video_path: pathlib.Path) -> float:
 class Shot:
     time: float
     type: str
+    extension_fields: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = dict(self.extension_fields)
+        payload.update({"time": self.time, "type": self.type})
+        return payload
 
 
 @dataclass
@@ -93,10 +100,64 @@ class AnnotationState:
     impacts: List[float] = field(default_factory=list)
     shots: List[Shot] = field(default_factory=list)
     done: bool = False
+    extension_fields: dict[str, Any] = field(default_factory=dict, repr=False)
 
     # Calculate time step in milliseconds for a given number of frames based on the video's fps.
     def step_ms(self, frames: int) -> int:
         return round(frames * 1000 / self.fps)
+
+
+def load_annotation_state(video: pathlib.Path, fps: float) -> AnnotationState:
+    """Load editable state while retaining fields owned by other tools."""
+    state = AnnotationState(video=video, fps=fps)
+    json_path = video.with_suffix(".json")
+    if not json_path.exists():
+        return state
+
+    data = load_annotation(json_path)
+    state.extension_fields = {
+        key: value
+        for key, value in data.items()
+        if key not in {"video", "impacts", "shots", "done"}
+    }
+    impacts = data.get("impacts")
+    if isinstance(impacts, list):
+        state.impacts = [
+            float(impact) for impact in impacts if isinstance(impact, (int, float))
+        ]
+    for shot in data.get("shots", []):
+        if not isinstance(shot, dict):
+            continue
+        timestamp = shot.get("time")
+        shot_type = shot.get("type")
+        if isinstance(timestamp, (int, float)) and isinstance(shot_type, str):
+            state.shots.append(
+                Shot(
+                    time=float(timestamp),
+                    type=shot_type,
+                    extension_fields={
+                        key: value
+                        for key, value in shot.items()
+                        if key not in {"time", "type"}
+                    },
+                )
+            )
+    state.done = data.get("done") is True
+    return state
+
+
+def annotation_payload(state: AnnotationState) -> dict[str, Any]:
+    """Merge annotator-owned values into a lossless annotation document."""
+    payload = dict(state.extension_fields)
+    payload.update(
+        {
+            "video": state.video.name,
+            "impacts": state.impacts,
+            "shots": [shot.to_dict() for shot in state.shots],
+            "done": state.done,
+        }
+    )
+    return payload
 
 
 ###############################################################################
@@ -214,16 +275,7 @@ class Annotator(QWidget):
     # Save the list of impact annotations to a JSON file located next to the video file.
     def _save_json(self):
         out = self.st.video.with_suffix(".json")
-        json.dump(
-            {
-                "video": self.st.video.name,
-                "impacts": self.st.impacts,
-                "shots": [shot.__dict__ for shot in self.st.shots],
-                "done": self.st.done,
-            },
-            open(out, "w"),
-            indent=2,
-        )
+        save_annotation(out, annotation_payload(self.st))
 
 
 ###############################################################################
@@ -233,21 +285,7 @@ class Annotator(QWidget):
 
 # Launch the annotation GUI for the specified video file.
 def annotate_video(path: pathlib.Path):
-    state = AnnotationState(video=path, fps=probe_fps(path))
-    json_path = path.with_suffix(".json")
-    if json_path.exists():
-        try:
-            data = json.load(open(json_path))
-            impacts = data.get("impacts", [])
-            if impacts:
-                state.impacts = impacts
-            for shot in data.get("shots", []):
-                t = shot.get("time")
-                typ = shot.get("type")
-                if isinstance(t, (int, float)) and isinstance(typ, str):
-                    state.shots.append(Shot(time=float(t), type=typ))
-        except Exception:
-            pass
+    state = load_annotation_state(path, probe_fps(path))
 
     app = QApplication.instance() or QApplication(sys.argv)
     win = Annotator(state)
@@ -287,7 +325,7 @@ def main():
         json_path = v.with_suffix(".json")
         if json_path.exists():
             try:
-                data = json.load(open(json_path))
+                data = load_annotation(json_path)
                 if data.get("done") is True:
                     print(f"\n=== {v.name} is marked as done, skipping. ===")
                     continue

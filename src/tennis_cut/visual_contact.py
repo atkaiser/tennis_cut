@@ -20,9 +20,12 @@ from typing import Literal, Protocol
 
 ObjectKind = Literal["person", "ball", "racket"]
 FEATURE_VERSION = 1
+KINEMATIC_FEATURE_VERSION = 1
+KINEMATIC_FEATURES_PER_FRAME = 26
 TIE_SCORE_TOLERANCE = 1e-6
 _LOG = logging.getLogger(__name__)
 DEFAULT_VISUAL_SEARCH_RADIUS = Fraction(2, 5)
+_DEFAULT_CACHE = object()
 
 
 @dataclass(frozen=True)
@@ -521,6 +524,144 @@ def extract_temporal_features(frames: tuple[VisualFrame, ...]) -> tuple[Temporal
     return _feature_rows(_prepare_frames(frames))
 
 
+def extract_kinematic_features(
+    frames: tuple[VisualFrame, ...],
+) -> tuple[tuple[float, ...], ...]:
+    """Describe body-relative racket and ball motion for every real frame.
+
+    Each row starts with the seven original visual features and appends racket
+    and ball position, visibility, quality, motion, and separation evidence.
+    Missing observations are represented by NaN so portable tree models can
+    follow their learned missing-value branches.
+    """
+
+    prepared = _prepare_frames(frames)
+    production = _feature_rows(prepared)
+    racket_positions: list[tuple[float, float] | None] = []
+    ball_positions: list[tuple[float, float] | None] = []
+    racket_quality: list[float] = []
+    ball_quality: list[float] = []
+    gaps: list[float] = []
+    for frame in prepared:
+        if frame.player is None:
+            racket_positions.append(None)
+            ball_positions.append(None)
+            racket_quality.append(0.0)
+            ball_quality.append(0.0)
+            gaps.append(float("nan"))
+            continue
+        player_center = _center(frame.player.box)
+        racket = frame.rackets[0] if frame.rackets else None
+        racket_center = None if racket is None else _center(racket["box"])  # type: ignore[arg-type]
+        ball_center = _moving_ball_center(frame)
+
+        def relative(
+            point: tuple[float, float] | None,
+        ) -> tuple[float, float] | None:
+            if point is None:
+                return None
+            return (
+                (point[0] - player_center[0]) / frame.diagonal,
+                (point[1] - player_center[1]) / frame.diagonal,
+            )
+
+        relative_racket = relative(racket_center)
+        relative_ball = relative(ball_center)
+        racket_positions.append(relative_racket)
+        ball_positions.append(relative_ball)
+        racket_quality.append(0.0 if racket is None else float(racket["quality"]))
+        usable_balls = [
+            ball for ball in frame.balls if float(ball.get("quality", 0.0)) >= 0.05
+        ]
+        ball_quality.append(
+            max((float(ball["quality"]) for ball in usable_balls), default=0.0)
+        )
+        gaps.append(
+            float("nan")
+            if relative_racket is None or relative_ball is None
+            else math.dist(relative_racket, relative_ball)
+        )
+
+    def motion(
+        positions: list[tuple[float, float] | None], index: int
+    ) -> tuple[float, float, float, float]:
+        previous = next(
+            (
+                (other, positions[other])
+                for other in range(index - 1, max(-1, index - 4), -1)
+                if positions[other] is not None
+            ),
+            None,
+        )
+        following = next(
+            (
+                (other, positions[other])
+                for other in range(index + 1, min(len(positions), index + 4))
+                if positions[other] is not None
+            ),
+            None,
+        )
+        current = positions[index]
+        if previous is None or following is None:
+            return (float("nan"),) * 4
+        previous_index, previous_point = previous
+        following_index, following_point = following
+        assert previous_point is not None and following_point is not None
+        dx = (following_point[0] - previous_point[0]) / (
+            following_index - previous_index
+        )
+        dy = (following_point[1] - previous_point[1]) / (
+            following_index - previous_index
+        )
+        speed = math.hypot(dx, dy)
+        if current is None:
+            return abs(dx), abs(dy), speed, float("nan")
+        incoming = (
+            (current[0] - previous_point[0]) / (index - previous_index),
+            (current[1] - previous_point[1]) / (index - previous_index),
+        )
+        outgoing = (
+            (following_point[0] - current[0]) / (following_index - index),
+            (following_point[1] - current[1]) / (following_index - index),
+        )
+        denominator = max(1e-8, math.hypot(*incoming) * math.hypot(*outgoing))
+        turn = sum(
+            before * after
+            for before, after in zip(incoming, outgoing, strict=True)
+        ) / denominator
+        return abs(dx), abs(dy), speed, turn
+
+    rows: list[tuple[float, ...]] = []
+    for index, feature in enumerate(production):
+        racket = racket_positions[index]
+        ball = ball_positions[index]
+        previous_gap = gaps[index - 1] if index else float("nan")
+        following_gap = gaps[index + 1] if index + 1 < len(gaps) else float("nan")
+        gap_change = (
+            float("nan")
+            if math.isnan(previous_gap) or math.isnan(following_gap)
+            else abs(following_gap - previous_gap) / 2
+        )
+        row = feature.values + (
+            float(racket is None),
+            racket_quality[index],
+            float("nan") if racket is None else abs(racket[0]),
+            float("nan") if racket is None else racket[1],
+            float("nan") if racket is None else math.hypot(*racket),
+            *motion(racket_positions, index),
+            float(ball is None),
+            ball_quality[index],
+            float("nan") if ball is None else abs(ball[0]),
+            float("nan") if ball is None else ball[1],
+            *motion(ball_positions, index),
+            gaps[index],
+            gap_change,
+        )
+        assert len(row) == KINEMATIC_FEATURES_PER_FRAME
+        rows.append(row)
+    return tuple(rows)
+
+
 class DeterministicTemporalRanker:
     """Temporary corroborator used until a trained artifact is supplied."""
 
@@ -560,6 +701,50 @@ def select_contact_frame(
                 prediction,
                 threshold,
             ),
+        )
+
+    predict_frames = None if ranker is None else getattr(ranker, "predict_frames", None)
+    if callable(predict_frames):
+        if deterministic.omission_reason in {
+            "no decoded frames",
+            "no player-related racket",
+            "no moving ball evidence",
+        }:
+            return result(
+                None,
+                0.0,
+                deterministic.plausible_frames,
+                deterministic.omission_reason,
+            )
+        if ranker.feature_version != deterministic.feature_version:
+            return result(None, 0.0, (), "incompatible temporal feature version")
+        prediction = predict_frames(frames)
+        selected = next(
+            (frame for frame in frames if frame.ordinal == prediction.frame_ordinal),
+            None,
+        )
+        if selected is None:
+            return result(
+                None,
+                0.0,
+                (),
+                "temporal ranker selected unknown frame",
+                prediction,
+            )
+        if prediction.confidence < ranker.confidence_threshold:
+            return result(
+                None,
+                0.0,
+                (prediction.frame_ordinal,),
+                "below contact confidence threshold",
+                prediction,
+            )
+        return result(
+            selected,
+            prediction.confidence,
+            (prediction.frame_ordinal,),
+            None,
+            prediction,
         )
 
     if deterministic.omission_reason is not None:
@@ -945,11 +1130,53 @@ class StockVisualContactSelector:
         device: str | None = None,
         frame_timeline: FrameTimeline | None = None,
         evidence_provider: _StockVisualEvidence | None = None,
+        decision_cache: object | None = _DEFAULT_CACHE,
     ) -> None:
         self.ranker = ranker
         self.device = device
         self.frame_timeline = frame_timeline
         self.evidence_provider = evidence_provider
+        if decision_cache is _DEFAULT_CACHE:
+            from .contact_cache import ContactDecisionCache
+
+            decision_cache = ContactDecisionCache()
+        self.decision_cache = decision_cache
+
+    def _cached(
+        self,
+        source: Path,
+        candidate_timestamp: Fraction,
+        radius: Fraction,
+    ) -> ContactSelection | None:
+        if self.decision_cache is None:
+            return None
+        from .contact_cache import detector_identity
+
+        return self.decision_cache.load(  # type: ignore[union-attr]
+            source,
+            candidate_timestamp,
+            radius,
+            detector_identity(self.ranker),
+        )
+
+    def _store(
+        self,
+        source: Path,
+        candidate_timestamp: Fraction,
+        radius: Fraction,
+        selection: ContactSelection,
+    ) -> ContactSelection:
+        if self.decision_cache is not None:
+            from .contact_cache import detector_identity
+
+            self.decision_cache.store(  # type: ignore[union-attr]
+                source,
+                candidate_timestamp,
+                radius,
+                detector_identity(self.ranker),
+                selection,
+            )
+        return selection
 
     def select(
         self,
@@ -958,6 +1185,9 @@ class StockVisualContactSelector:
         *,
         radius: Fraction = DEFAULT_VISUAL_SEARCH_RADIUS,
     ) -> ContactSelection:
+        cached = self._cached(source, candidate_timestamp, radius)
+        if cached is not None:
+            return cached
         if self.evidence_provider is None:
             self.evidence_provider = _StockVisualEvidence(
                 self.device, self.frame_timeline
@@ -965,7 +1195,12 @@ class StockVisualContactSelector:
         provider = self.evidence_provider
         if radius <= DEFAULT_VISUAL_SEARCH_RADIUS:
             frames = provider.frames(source, candidate_timestamp, radius)
-            return select_contact_frame(frames, self.ranker)
+            return self._store(
+                source,
+                candidate_timestamp,
+                radius,
+                select_contact_frame(frames, self.ranker),
+            )
 
         candidate_timestamps = _covering_candidate_timestamps(
             candidate_timestamp,
@@ -976,15 +1211,20 @@ class StockVisualContactSelector:
             candidate_timestamps,
             DEFAULT_VISUAL_SEARCH_RADIUS,
         )
-        selections = tuple(
-            select_contact_frame(frames, self.ranker) for frames in windows
+        unique_frames = {
+            (frame.ordinal, frame.evidence.identity): frame
+            for window in windows
+            for frame in window
+        }
+        ordered_frames = tuple(
+            sorted(unique_frames.values(), key=lambda frame: frame.ordinal)
         )
-        accepted = tuple(
-            selection for selection in selections if selection.frame is not None
+        return self._store(
+            source,
+            candidate_timestamp,
+            radius,
+            select_contact_frame(ordered_frames, self.ranker),
         )
-        if accepted:
-            return max(accepted, key=_accepted_selection_evidence)
-        return max(selections, key=_failed_selection_evidence)
 
     def select_many(
         self,
@@ -996,9 +1236,28 @@ class StockVisualContactSelector:
                 self.device, self.frame_timeline
             )
         provider = self.evidence_provider
-        windows = provider.frames_many(source, candidate_timestamps)
+        selections: list[ContactSelection | None] = [
+            self._cached(source, timestamp, DEFAULT_VISUAL_SEARCH_RADIUS)
+            for timestamp in candidate_timestamps
+        ]
+        missing_positions = [
+            index for index, selection in enumerate(selections) if selection is None
+        ]
+        missing_timestamps = tuple(
+            candidate_timestamps[index] for index in missing_positions
+        )
+        if missing_timestamps:
+            windows = provider.frames_many(source, missing_timestamps)
+            for position, frames in zip(missing_positions, windows, strict=True):
+                timestamp = candidate_timestamps[position]
+                selections[position] = self._store(
+                    source,
+                    timestamp,
+                    DEFAULT_VISUAL_SEARCH_RADIUS,
+                    select_contact_frame(frames, self.ranker),
+                )
         return tuple(
-            select_contact_frame(frames, self.ranker) for frames in windows
+            selection for selection in selections if selection is not None
         )
 
 
@@ -1023,29 +1282,13 @@ def _covering_candidate_timestamps(
     return tuple(candidates)
 
 
-def _failed_selection_evidence(selection: ContactSelection) -> tuple[float, int]:
-    diagnostics = selection.diagnostics
-    if diagnostics is None:
-        return (0.0, 0)
-    ranking = diagnostics.deterministic.ranked_frames
-    return (
-        max((frame.score for frame in ranking), default=0.0),
-        len(diagnostics.deterministic.racket_frames),
-    )
-
-
-def _accepted_selection_evidence(
-    selection: ContactSelection,
-) -> tuple[float, int]:
-    assert selection.frame is not None
-    return (selection.contact_confidence, -selection.frame.ordinal)
-
-
 __all__ = [
     "ContactSelection",
     "Detection",
     "DeterministicSelection",
     "FEATURE_VERSION",
+    "KINEMATIC_FEATURE_VERSION",
+    "KINEMATIC_FEATURES_PER_FRAME",
     "FrameEvidence",
     "FrameTimeline",
     "ObjectKind",
@@ -1058,6 +1301,7 @@ __all__ = [
     "StockVisualContactSelector",
     "decode_exact_frame_images",
     "extract_temporal_features",
+    "extract_kinematic_features",
     "rank_contact_frames",
     "select_contact_frame",
 ]

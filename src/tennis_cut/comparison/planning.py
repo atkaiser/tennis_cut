@@ -24,6 +24,10 @@ class UnrepresentableTimeline(ValueError):
     """The target container cannot assign a distinct tick to every event."""
 
 
+class UnrenderablePlayerCrop(ValueError):
+    """A player envelope cannot fit the required panel crop in its source."""
+
+
 @dataclass(frozen=True)
 class ComparisonSource:
     """One inspected video and its pixel geometry."""
@@ -305,7 +309,9 @@ def _fixed_crop(
     crop_width = aspect_scale * aspect_width
     crop_height = aspect_scale * aspect_height
     if crop_width > source.width or crop_height > source.height:
-        raise ValueError("8:9 crop with 25% margin cannot fit inside the source")
+        raise UnrenderablePlayerCrop(
+            "8:9 crop with 25% margin cannot fit inside the source"
+        )
 
     center_x = Fraction(left + right, 2)
     center_y = Fraction(top + bottom, 2)

@@ -60,8 +60,11 @@ rendering stages; use `--quiet` to show errors only.
 
 The professional reference should be a trimmed forehand clip with contact in
 the middle 75% of its duration. The command searches that region with the same
-bundled visual contact detector used for the user's swings; no manual frame
-selection or sidecar is required.
+bundled visual contact detector used for the user's swings. If that automatic
+search fails, `--pro-contact-frame FRAME` supplies the 0-based source frame to
+use. This override applies only to the professional reference: home-video
+swings are always selected automatically and are omitted when the detector
+lacks sufficient evidence.
 
 
 ## Linting

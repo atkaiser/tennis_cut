@@ -3,6 +3,7 @@
 .vscode
 .DS_Store
 yolov8n.pt
+yolov8n-pose.pt
 
 __pycache__/
 *.egg-info/

@@ -98,6 +98,65 @@ def _exact_decoded_frame(
     return matches[0] if len(matches) == 1 else None
 
 
+def _validate_window(
+    *,
+    pro_video: Path,
+    pro_speed: Fraction,
+    inspected_media: InspectedMedia,
+    frame: DecodedFrame,
+    stage: str,
+    incomplete_window_message: str,
+) -> ProSelection | SelectionProcessingFailure:
+    first_frame = inspected_media.frames[0]
+    last_frame = inspected_media.frames[-1]
+    available_before = (frame.timestamp - first_frame.timestamp) * pro_speed
+    available_after = (last_frame.timestamp - frame.timestamp) * pro_speed
+    if (
+        available_before < COMPARISON_POLICY.pre_contact
+        or available_after < COMPARISON_POLICY.post_contact
+    ):
+        return SelectionProcessingFailure(
+            stage=stage,
+            message=incomplete_window_message,
+        )
+    return ProSelection(pro_video, frame)
+
+
+def select_pro_contact_frame(
+    *,
+    pro_video: Path,
+    pro_speed: Fraction,
+    inspected_media: InspectedMedia,
+    frame_ordinal: int,
+) -> ProSelection | SelectionProcessingFailure:
+    """Use an explicit pro frame without creating a manual path for home videos."""
+
+    if not inspected_media.frames:
+        return SelectionProcessingFailure(
+            stage="manual pro contact selection",
+            message="pro video has no decoded frames",
+        )
+    frame = next(
+        (item for item in inspected_media.frames if item.ordinal == frame_ordinal),
+        None,
+    )
+    if frame is None:
+        return SelectionProcessingFailure(
+            stage="manual pro contact selection",
+            message=f"pro frame {frame_ordinal} does not exist",
+        )
+    return _validate_window(
+        pro_video=pro_video,
+        pro_speed=pro_speed,
+        inspected_media=inspected_media,
+        frame=frame,
+        stage="manual pro contact selection",
+        incomplete_window_message=(
+            "selected contact lacks the complete comparison window"
+        ),
+    )
+
+
 def find_pro_contact(
     *,
     pro_video: Path,
@@ -131,20 +190,16 @@ def find_pro_contact(
             message="visual contact finder returned a frame outside the pro source",
         )
 
-    first_frame = inspected_media.frames[0]
-    last_frame = inspected_media.frames[-1]
-    available_before = (frame.timestamp - first_frame.timestamp) * pro_speed
-    available_after = (last_frame.timestamp - frame.timestamp) * pro_speed
-    if (
-        available_before < COMPARISON_POLICY.pre_contact
-        or available_after < COMPARISON_POLICY.post_contact
-    ):
-        return SelectionProcessingFailure(
-            stage="pro contact detection",
-            message="detected contact lacks the complete comparison window",
-        )
-
-    return ProSelection(pro_video, frame)
+    return _validate_window(
+        pro_video=pro_video,
+        pro_speed=pro_speed,
+        inspected_media=inspected_media,
+        frame=frame,
+        stage="pro contact detection",
+        incomplete_window_message=(
+            "detected contact lacks the complete comparison window"
+        ),
+    )
 
 
 __all__ = [
@@ -154,4 +209,5 @@ __all__ = [
     "SelectionProcessingFailure",
     "VisualContactFinder",
     "find_pro_contact",
+    "select_pro_contact_frame",
 ]

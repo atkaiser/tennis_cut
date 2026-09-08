@@ -225,6 +225,21 @@ class ComparisonCliTests(unittest.TestCase):
         self.assertIsNone(args.device)
         self.assertFalse(args.clips)
 
+    def test_parser_accepts_a_manual_pro_contact_frame_only(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "user.mov",
+                "pro.mov",
+                "--pro-speed",
+                "1",
+                "--pro-contact-frame",
+                "636",
+            ]
+        )
+
+        self.assertEqual(args.pro_contact_frame, 636)
+        self.assertNotIn("user-contact-frame", build_parser().format_help())
+
     def test_parser_rejects_invalid_decimal_playback_factors(self) -> None:
         for option, value in (
             ("--pro-speed", "1/4"),

@@ -149,7 +149,54 @@ class VisualContactSelectionTests(unittest.TestCase):
         self.assertIsNone(result.frame)
         self.assertEqual(result.omission_reason, "below contact confidence threshold")
 
-    def test_wide_search_uses_local_windows_and_selects_highest_confidence(self) -> None:
+    def test_direct_frame_ranker_replaces_the_hand_written_selection(self) -> None:
+        frames = tuple(
+            frame(
+                ordinal,
+                (
+                    detection("person", (0, 0, 100, 300)),
+                    detection("racket", (35, 140, 90, 230)),
+                    detection(
+                        "ball",
+                        (70 + ordinal * 8, 155, 80 + ordinal * 8, 165),
+                    ),
+                ),
+            )
+            for ordinal in range(5)
+        )
+
+        class DirectRanker:
+            feature_version = FEATURE_VERSION
+            confidence_threshold = 0.2
+
+            def predict_frames(self, supplied_frames):
+                self.frames = supplied_frames
+                return TemporalPrediction(frame_ordinal=3, confidence=0.8)
+
+        ranker = DirectRanker()
+        result = select_contact_frame(frames, ranker)
+
+        self.assertEqual(ranker.frames, frames)
+        self.assertEqual(result.selected_frame, 3)
+        self.assertEqual(result.plausible_frames, (3,))
+        self.assertEqual(result.contact_confidence, 0.8)
+
+    def test_direct_ranker_omits_a_window_without_minimum_evidence(self) -> None:
+        frames = tuple(frame(ordinal, ()) for ordinal in range(5))
+
+        class DirectRanker:
+            feature_version = FEATURE_VERSION
+            confidence_threshold = 0.0
+
+            def predict_frames(self, supplied_frames):
+                raise AssertionError("insufficient evidence should not be ranked")
+
+        result = select_contact_frame(frames, DirectRanker())
+
+        self.assertIsNone(result.frame)
+        self.assertEqual(result.omission_reason, "no player-related racket")
+
+    def test_wide_search_ranks_all_local_windows_on_one_score_scale(self) -> None:
         class RecordingProvider:
             calls = []
 
@@ -158,16 +205,13 @@ class VisualContactSelectionTests(unittest.TestCase):
                 return tuple((frame(index, ()),) for index in range(8))
 
         provider = RecordingProvider()
-        rejected = ContactSelection(None, 0.0, (), "no moving ball evidence")
-        lower = ContactSelection(frame(100, ()), 0.7, (100,), None)
         higher = ContactSelection(frame(200, ()), 0.9, (200,), None)
-        selections = (rejected, lower, rejected, higher, rejected, rejected, rejected, rejected)
         selector = StockVisualContactSelector(evidence_provider=provider)
 
         with patch(
             "tennis_cut.visual_contact.select_contact_frame",
-            side_effect=selections,
-        ):
+            return_value=higher,
+        ) as select:
             result = selector.select(
                 Path("pro.mov"),
                 Fraction(10),
@@ -175,6 +219,10 @@ class VisualContactSelectionTests(unittest.TestCase):
             )
 
         self.assertEqual(result, higher)
+        select.assert_called_once_with(
+            tuple(frame(index, ()) for index in range(8)),
+            None,
+        )
         self.assertEqual(
             provider.calls,
             [

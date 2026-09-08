@@ -47,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("user_video", type=Path)
     parser.add_argument("pro_video", type=Path)
     parser.add_argument("--pro-speed", type=_fraction, required=True, metavar="FACTOR")
+    parser.add_argument(
+        "--pro-contact-frame",
+        type=int,
+        metavar="FRAME",
+        help="use this 0-based source frame for pro contact instead of detecting it",
+    )
     parser.add_argument("--slowmo", type=_fraction, default=Fraction(1, 16))
     parser.add_argument("-o", "--output-dir", type=Path, default=Path("./processed_vids"))
     parser.add_argument("--clips", action="store_true")
@@ -116,6 +122,7 @@ def main(
         device=args.device,
         diagnostic_report=args.debug_report or args.debug_report_only,
         diagnostics_only=args.debug_report_only is not None,
+        pro_contact_frame=args.pro_contact_frame,
     )
     try:
         result = compare_videos(

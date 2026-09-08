@@ -33,6 +33,7 @@ from .planning import (
     ComparisonSource,
     PlayerObservation,
     SelectedSourceWindow,
+    UnrenderablePlayerCrop,
     build_render_plan,
     prepare_source_window,
     select_comparison_windows,
@@ -41,6 +42,7 @@ from .pro_selection import (
     InspectedMedia,
     ProSelection,
     SelectionProcessingFailure,
+    select_pro_contact_frame,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -65,6 +67,7 @@ class ComparisonRequest:
     device: str | None = None
     diagnostic_report: Path | None = None
     diagnostics_only: bool = False
+    pro_contact_frame: int | None = None
 
     @property
     def detection_config(self) -> DetectionConfig:
@@ -136,6 +139,12 @@ class ComparisonDependencies(Protocol):
         self, window: SelectedSourceWindow, locator: PlayerLocator
     ) -> tuple[PlayerObservation, ...]: ...
 
+    def observe_players_many(
+        self,
+        windows: tuple[SelectedSourceWindow, ...],
+        locator: PlayerLocator,
+    ) -> tuple[tuple[PlayerObservation, ...], ...]: ...
+
     def render_artifacts(
         self,
         plans: tuple[ComparisonRenderPlan, ...],
@@ -149,6 +158,7 @@ class SystemComparisonDependencies:
 
     def __init__(self) -> None:
         self._diagnostics_recorder = None
+        self._decoded_frame_workspace = None
 
     def executable_exists(self, name: str) -> bool:
         return shutil.which(name) is not None
@@ -316,23 +326,56 @@ class SystemComparisonDependencies:
         )
         return observations
 
+    def observe_players_many(
+        self,
+        windows: tuple[SelectedSourceWindow, ...],
+        locator: PlayerLocator,
+    ) -> tuple[tuple[PlayerObservation, ...], ...]:
+        from .media import DecodedFrameWorkspace
+
+        if not windows:
+            return ()
+        if self._decoded_frame_workspace is None:
+            self._decoded_frame_workspace = DecodedFrameWorkspace()
+        role = "professional" if windows[0].swing_ordinal is None else "user"
+        _LOG.info(
+            "Locating players for %d %s window(s) in one source traversal",
+            len(windows),
+            role,
+        )
+        started = monotonic()
+        observations = self._decoded_frame_workspace.observe_players_many(
+            windows, locator
+        )
+        _LOG.info(
+            "Finished batched %s player location: %d observations in %.1fs",
+            role,
+            sum(len(group) for group in observations),
+            monotonic() - started,
+        )
+        return observations
+
     def render_artifacts(
         self,
         plans: tuple[ComparisonRenderPlan, ...],
         primary: Path,
         clips: tuple[Path, ...],
     ) -> None:
-        from .media import render_comparison, render_compilation
+        from .media import render_comparison_artifacts
 
         _LOG.info("Rendering comparison compilation with %d swing(s): %s", len(plans), primary)
         started = monotonic()
-        render_compilation(plans, primary)
+        if self._decoded_frame_workspace is None:
+            render_comparison_artifacts(plans, primary, clips)
+        else:
+            try:
+                self._decoded_frame_workspace.render_artifacts(
+                    plans, primary, clips
+                )
+            finally:
+                self._decoded_frame_workspace.close()
+                self._decoded_frame_workspace = None
         _LOG.info("Finished comparison compilation in %.1fs", monotonic() - started)
-        for plan, clip in zip(plans, clips):
-            if plan.artifact.path != clip:
-                raise ValueError("clip artifact does not match its render plan")
-            _LOG.info("Rendering optional comparison clip: %s", clip)
-            render_comparison(plan)
 
 
 def _finite_decimal(value: Fraction) -> str:
@@ -387,6 +430,8 @@ def _preflight(request: ComparisonRequest, dependencies: ComparisonDependencies)
         raise InvalidComparisonRequest("user and pro videos must be distinct files")
     if request.pro_speed <= 0:
         raise InvalidComparisonRequest("pro speed must be greater than zero")
+    if request.pro_contact_frame is not None and request.pro_contact_frame < 0:
+        raise InvalidComparisonRequest("pro contact frame must be zero or greater")
     if not 0 < request.slow_motion <= 1:
         raise InvalidComparisonRequest("slow motion must be in (0, 1]")
     if request.shot_type_model is not None and request.shot_model is None:
@@ -452,11 +497,20 @@ def compare_videos(
     if not user_has_audio:
         raise InvalidComparisonRequest(f"user video has no audio: {request.user_video}")
 
-    selection = dependencies.resolve_selection(
-        request.pro_video,
-        request.pro_speed,
-        pro_source.inspected_media,
-        request.detection_config,
+    selection = (
+        dependencies.resolve_selection(
+            request.pro_video,
+            request.pro_speed,
+            pro_source.inspected_media,
+            request.detection_config,
+        )
+        if request.pro_contact_frame is None
+        else select_pro_contact_frame(
+            pro_video=request.pro_video,
+            pro_speed=request.pro_speed,
+            inspected_media=pro_source.inspected_media,
+            frame_ordinal=request.pro_contact_frame,
+        )
     )
     if isinstance(selection, SelectionProcessingFailure):
         raise ComparisonProcessingFailed(selection.stage, selection.message)
@@ -491,11 +545,28 @@ def compare_videos(
 
     try:
         locator = dependencies.create_player_locator(request.device)
+        observe_many = getattr(dependencies, "observe_players_many", None)
+        pro_observations = (
+            tuple(observe_many((windows.pro,), locator))[0]
+            if callable(observe_many)
+            else dependencies.observe_players(windows.pro, locator)
+        )
         prepared_pro = prepare_source_window(
-            windows.pro, dependencies.observe_players(windows.pro, locator)
+            windows.pro, pro_observations
         )
     except Exception as error:
         raise ComparisonProcessingFailed("prepare pro window", str(error)) from error
+
+    user_observation_groups = None
+    if callable(observe_many):
+        try:
+            user_observation_groups = tuple(observe_many(windows.user, locator))
+            if len(user_observation_groups) != len(windows.user):
+                raise ValueError("player locator returned the wrong window count")
+        except Exception as error:
+            raise ComparisonProcessingFailed(
+                "prepare user windows", str(error)
+            ) from error
 
     primary = primary_output_path(request)
     clips_directory = primary.with_name(f"{primary.stem}_clips")
@@ -507,21 +578,26 @@ def compare_videos(
         output_existed=primary.parent.exists(),
     ) as staging:
         staged_primary = staging / primary.name
-        staged_clips = tuple(
-            staging / clips_directory.name / f"comparison_{index:03d}.mp4"
-            for index in range(1, len(windows.user) + 1)
-        ) if request.clips else ()
+        staged_clips: list[Path] = []
         plans = []
-        for index, user_window in enumerate(windows.user):
+        for window_index, user_window in enumerate(windows.user):
             try:
+                observations = (
+                    user_observation_groups[window_index]
+                    if user_observation_groups is not None
+                    else dependencies.observe_players(user_window, locator)
+                )
                 prepared_user = prepare_source_window(
                     user_window,
-                    dependencies.observe_players(user_window, locator),
+                    observations,
                 )
+                comparison_number = len(plans) + 1
                 artifact = (
-                    staged_clips[index]
-                    if staged_clips
-                    else staging / f"comparison_{index + 1:03d}.mp4"
+                    staging
+                    / clips_directory.name
+                    / f"comparison_{comparison_number:03d}.mp4"
+                    if request.clips
+                    else staging / f"comparison_{comparison_number:03d}.mp4"
                 )
                 plans.append(
                     build_render_plan(
@@ -531,13 +607,24 @@ def compare_videos(
                         artifact=ArtifactRequest(artifact),
                     )
                 )
+                if request.clips:
+                    staged_clips.append(artifact)
+            except UnrenderablePlayerCrop as error:
+                _LOG.info(
+                    "User swing %s omitted: %s",
+                    user_window.swing_ordinal,
+                    error,
+                )
             except Exception as error:
                 raise ComparisonProcessingFailed(
                     f"prepare user swing {user_window.swing_ordinal}", str(error)
                 ) from error
+        if not plans:
+            return ComparisonResult((), 0)
+        staged_clips_tuple = tuple(staged_clips)
         try:
             dependencies.render_artifacts(
-                tuple(plans), staged_primary, staged_clips
+                tuple(plans), staged_primary, staged_clips_tuple
             )
         except Exception as error:
             raise ComparisonProcessingFailed(
@@ -548,7 +635,7 @@ def compare_videos(
 
         published = _publish_artifacts(
             staged_primary=staged_primary,
-            staged_clips=staged_clips,
+            staged_clips=staged_clips_tuple,
             primary=primary,
             clips_directory=clips_directory,
         )

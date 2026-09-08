@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 import json
 
 from tennis_cut.evaluate_temporal_ranker import (
@@ -15,13 +16,16 @@ from tennis_cut.evaluate_temporal_ranker import (
 from tennis_cut.temporal_ranker import (
     HistGradientBoostingArtifact,
     HistGradientBoostingNode,
+    KINEMATIC_VECTOR_SIZE,
+    KinematicEnsembleArtifact,
+    KinematicEnsembleRanker,
     TEMPORAL_VECTOR_SIZE,
     TemporalRankerArtifactError,
     all_temporal_feature_vectors,
     load_temporal_ranker,
     TemporalRankerArtifact,
 )
-from tennis_cut.visual_contact import TemporalFeatures, TemporalPrediction
+from tennis_cut.visual_contact import FrameEvidence, TemporalFeatures, TemporalPrediction, VisualFrame
 
 
 def feature_rows(count: int = 3) -> tuple[TemporalFeatures, ...]:
@@ -29,6 +33,43 @@ def feature_rows(count: int = 3) -> tuple[TemporalFeatures, ...]:
 
 
 class TemporalRankerTests(unittest.TestCase):
+    def test_portable_kinematic_ensemble_selects_a_real_frame(self) -> None:
+        nodes = (
+            HistGradientBoostingNode(0.0, 0, 0.5, True, 1, 2, False),
+            HistGradientBoostingNode(0.0, 0, 0.0, False, 0, 0, True),
+            HistGradientBoostingNode(1.0, 0, 0.0, False, 0, 0, True),
+        )
+        component = HistGradientBoostingArtifact(
+            0.0,
+            (nodes,),
+            "forehand",
+            0.0,
+            vector_size=KINEMATIC_VECTOR_SIZE,
+        )
+        frames = tuple(
+            VisualFrame(FrameEvidence(index + 10, index, ())) for index in range(3)
+        )
+        vectors = (
+            (0.0,) * KINEMATIC_VECTOR_SIZE,
+            (1.0,) + (0.0,) * (KINEMATIC_VECTOR_SIZE - 1),
+            (0.0,) * KINEMATIC_VECTOR_SIZE,
+        )
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "ranker.json"
+            KinematicEnsembleArtifact(
+                component, component, 0.85, "forehand"
+            ).save(path)
+            ranker = load_temporal_ranker(path)
+
+            with patch(
+                "tennis_cut.temporal_ranker.all_kinematic_feature_vectors",
+                return_value=vectors,
+            ):
+                prediction = ranker.predict_frames(frames)
+
+        self.assertIsInstance(ranker, KinematicEnsembleRanker)
+        self.assertEqual(prediction.frame_ordinal, 11)
+
     def test_extracts_nine_frames_and_clamps_at_boundaries(self) -> None:
         vectors = all_temporal_feature_vectors(feature_rows())
 

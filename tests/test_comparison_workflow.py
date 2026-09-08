@@ -320,6 +320,66 @@ class DirectRenderDependencies(MatchingDependencies):
 
 
 class CompareVideosTests(unittest.TestCase):
+    def test_groups_player_observations_by_source_when_adapter_supports_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video, pro_video, models = comparison_files(directory)
+
+            class BatchedDependencies(MatchingDependencies):
+                def __init__(self, user_video: Path, pro_video: Path) -> None:
+                    super().__init__(user_video, pro_video)
+                    self.observed_batches: list[list[int | None]] = []
+
+                def observe_players(self, window, locator):
+                    raise AssertionError("individual observation must not run")
+
+                def observe_players_many(self, windows, locator):
+                    self.observed_batches.append(
+                        [window.swing_ordinal for window in windows]
+                    )
+                    return tuple(
+                        (PlayerObservation(0, Rectangle(400, 100, 160, 360)),)
+                        for _window in windows
+                    )
+
+            dependencies = BatchedDependencies(user_video, pro_video)
+            request = ComparisonRequest(
+                user_video=user_video,
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                output_directory=directory / "outputs",
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
+            )
+
+            result = compare_videos(request, dependencies)
+
+        self.assertEqual(result.emitted_comparison_count, 2)
+        self.assertEqual(dependencies.observed_batches, [[None], [4, 9]])
+
+    def test_manual_pro_frame_bypasses_only_automatic_pro_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video, pro_video, models = comparison_files(directory)
+            dependencies = ZeroComparisonDependencies(user_video, pro_video)
+            request = ComparisonRequest(
+                user_video=user_video,
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
+                temporal_ranker_model=None,
+                pro_contact_frame=15,
+            )
+
+            result = compare_videos(request, dependencies)
+
+        self.assertEqual(result, ComparisonResult((), 0))
+        self.assertNotIn("select", dependencies.events)
+        self.assertIn("detect", dependencies.events)
+
     def test_diagnostics_only_writes_report_and_skips_player_work_and_rendering(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -568,6 +628,54 @@ class CompareVideosTests(unittest.TestCase):
             self.assertEqual(dependencies.rendered_ordinals, [4, 9])
             self.assertEqual(user_video.read_bytes(), b"user source")
             self.assertEqual(pro_video.read_bytes(), b"pro source")
+
+    def test_omits_user_swing_when_required_crop_cannot_fit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            user_video, pro_video, models = comparison_files(directory)
+
+            class UncroppableSwingDependencies(MatchingDependencies):
+                def observe_players(
+                    self, window: SelectedSourceWindow, locator: object
+                ) -> tuple[PlayerObservation, ...]:
+                    self.observed_ordinals.append(window.swing_ordinal)
+                    if window.swing_ordinal == 4:
+                        return (
+                            PlayerObservation(0, Rectangle(0, 0, 960, 900)),
+                        )
+                    return (PlayerObservation(0, Rectangle(400, 100, 160, 360)),)
+
+            request = ComparisonRequest(
+                user_video=user_video,
+                pro_video=pro_video,
+                pro_speed=Fraction(1),
+                output_directory=directory / "outputs",
+                clips=True,
+                audio_model=models[0],
+                shot_model=models[1],
+                shot_type_model=models[2],
+            )
+            dependencies = UncroppableSwingDependencies(user_video, pro_video)
+
+            with self.assertLogs(
+                "tennis_cut.comparison.workflow", level="INFO"
+            ) as logs:
+                result = compare_videos(request, dependencies)
+
+            primary = request.output_directory / "user_vs_pro_slow0.0625x.mp4"
+            clip = request.output_directory / (
+                "user_vs_pro_slow0.0625x_clips/comparison_001.mp4"
+            )
+            self.assertEqual(result, ComparisonResult((primary, clip), 1))
+            self.assertEqual(dependencies.observed_ordinals, [None, 4, 9])
+            self.assertEqual(dependencies.rendered_ordinals, [9])
+            self.assertTrue(
+                any(
+                    "User swing 4 omitted: 8:9 crop with 25% margin cannot fit"
+                    in entry
+                    for entry in logs.output
+                )
+            )
 
     def test_requested_comparison_clips_are_numbered_and_published_together(
         self,

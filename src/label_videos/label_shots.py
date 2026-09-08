@@ -28,7 +28,6 @@ Key bindings
 from __future__ import annotations
 
 import argparse
-import json
 import pathlib
 import sys
 from dataclasses import dataclass
@@ -38,6 +37,8 @@ from PySide6.QtCore import Qt, QUrl, QTimer
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+
+from tennis_cut.annotation_json import load_annotation, save_annotation
 
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv"}
 
@@ -119,7 +120,7 @@ class ShotLabeler(QWidget):
         it = self.items[self.idx]
         shots = it.data.setdefault("shots", [])
         shots.append({"time": it.time, "type": typ})
-        json.dump(it.data, open(it.json_path, "w"), indent=2)
+        save_annotation(it.json_path, it.data)
         print(f"[{typ}] {it.video.name} {it.time:.3f}s")
 
         self.idx += 1
@@ -135,7 +136,7 @@ def gather_items(directory: pathlib.Path) -> List[ImpactItem]:
         if not js.exists():
             continue
         try:
-            data = json.load(open(js))
+            data = load_annotation(js)
         except Exception:
             continue
         impacts = data.get("impacts")

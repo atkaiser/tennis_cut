@@ -9,6 +9,7 @@ from tennis_cut.comparison.pro_selection import (
     ProSelection,
     SelectionProcessingFailure,
     find_pro_contact,
+    select_pro_contact_frame,
 )
 from tennis_cut.visual_contact import ContactSelection, FrameEvidence, VisualFrame
 
@@ -53,6 +54,36 @@ class StubFinder:
 
 
 class FindProContactTests(unittest.TestCase):
+    def test_uses_an_explicit_existing_pro_frame(self) -> None:
+        source = Path("pro.mov")
+
+        result = select_pro_contact_frame(
+            pro_video=source,
+            pro_speed=Fraction(1),
+            inspected_media=inspected_media(),
+            frame_ordinal=12,
+        )
+
+        self.assertEqual(
+            result,
+            ProSelection(source, DecodedFrame(2, 12, 12, Fraction(1, 10))),
+        )
+
+    def test_rejects_a_manual_pro_frame_that_does_not_exist(self) -> None:
+        result = select_pro_contact_frame(
+            pro_video=Path("pro.mov"),
+            pro_speed=Fraction(1),
+            inspected_media=inspected_media(),
+            frame_ordinal=99,
+        )
+
+        self.assertEqual(
+            result,
+            SelectionProcessingFailure(
+                "manual pro contact selection", "pro frame 99 does not exist"
+            ),
+        )
+
     def test_searches_middle_75_percent_and_finds_exact_contact(self) -> None:
         source = Path("pro.mov")
         finder = StubFinder(contact(12))

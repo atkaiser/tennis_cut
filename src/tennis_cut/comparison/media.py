@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 import json
 import logging
-from math import lcm
+from math import ceil, lcm
 from pathlib import Path
 import subprocess
 import tempfile
@@ -27,6 +27,7 @@ from .planning import (
 from .pro_selection import DecodedFrame, InspectedMedia
 
 _LOG = logging.getLogger(__name__)
+PLAYER_OBSERVATIONS_PER_NORMALIZED_SECOND = 10
 
 
 class MediaCommandFailed(RuntimeError):
@@ -155,7 +156,9 @@ def _decode_frames(
     unique_ordinals = tuple(sorted(set(ordinals)))
     if not unique_ordinals:
         return {}
-    selection = "+".join(f"eq(n\\,{ordinal})" for ordinal in unique_ordinals)
+    selection = _balanced_addition(
+        [f"eq(n\\,{ordinal})" for ordinal in unique_ordinals]
+    )
     output_pattern = output_directory / "frame_%09d.png"
     _run_media_command(
         [
@@ -183,6 +186,23 @@ def _decode_frames(
     return dict(zip(unique_ordinals, paths))
 
 
+def _balanced_addition(terms: list[str]) -> str:
+    """Build a shallow FFmpeg expression tree for a non-empty sum."""
+
+    if not terms:
+        raise ValueError("at least one expression term is required")
+    while len(terms) > 1:
+        terms = [
+            (
+                f"({terms[index]}+{terms[index + 1]})"
+                if index + 1 < len(terms)
+                else terms[index]
+            )
+            for index in range(0, len(terms), 2)
+        ]
+    return terms[0]
+
+
 def observe_players(
     window: SelectedSourceWindow,
     locator: PlayerLocator,
@@ -204,6 +224,139 @@ def observe_players(
     return tuple(observations)
 
 
+def _sampled_player_ordinals(window: SelectedSourceWindow) -> tuple[int, ...]:
+    """Select a stable, sparse set that includes both bounds and contact."""
+
+    frames = window.normalized_frames
+    if len(frames) <= 2:
+        return tuple(frame.frame.ordinal for frame in frames)
+    duration = frames[-1].offset - frames[0].offset
+    sample_count = min(
+        len(frames),
+        max(2, ceil(duration * PLAYER_OBSERVATIONS_PER_NORMALIZED_SECOND) + 1),
+    )
+    indexes = {
+        int(Fraction(index * (len(frames) - 1), sample_count - 1) + Fraction(1, 2))
+        for index in range(sample_count)
+    }
+    indexes.add(
+        next(
+            index
+            for index, frame in enumerate(frames)
+            if frame.frame == window.contact_frame
+        )
+    )
+    return tuple(frames[index].frame.ordinal for index in sorted(indexes))
+
+
+def _find_player_boxes(
+    locator: PlayerLocator, paths: tuple[Path, ...]
+) -> tuple[tuple[int, int, int, int] | None, ...]:
+    find_boxes = getattr(locator, "find_boxes", None)
+    boxes = (
+        tuple(find_boxes(paths))
+        if callable(find_boxes)
+        else tuple(locator.find_box(path) for path in paths)
+    )
+    if len(boxes) != len(paths):
+        raise ValueError("player locator returned the wrong result count")
+    return boxes
+
+
+def _observations_from_decoded(
+    sampled: tuple[tuple[int, ...], ...],
+    locator: PlayerLocator,
+    decoded: dict[int, Path],
+) -> tuple[tuple[PlayerObservation, ...], ...]:
+    ordinals = tuple(sorted({ordinal for group in sampled for ordinal in group}))
+    boxes = _find_player_boxes(
+        locator,
+        tuple(decoded[ordinal] for ordinal in ordinals),
+    )
+    by_ordinal = dict(zip(ordinals, boxes, strict=True))
+    results = []
+    for group in sampled:
+        observations = []
+        for ordinal in group:
+            box = by_ordinal[ordinal]
+            if box is None:
+                continue
+            x1, y1, x2, y2 = box
+            observations.append(
+                PlayerObservation(ordinal, Rectangle(x1, y1, x2 - x1, y2 - y1))
+            )
+        results.append(tuple(observations))
+    return tuple(results)
+
+
+class DecodedFrameWorkspace:
+    """Share exact decoded frames across observation and artifact rendering."""
+
+    def __init__(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self._decoded: dict[Path, dict[int, Path]] = {}
+
+    def observe_players_many(
+        self,
+        windows: tuple[SelectedSourceWindow, ...],
+        locator: PlayerLocator,
+    ) -> tuple[tuple[PlayerObservation, ...], ...]:
+        if not windows:
+            return ()
+        source = windows[0].source.path
+        if any(window.source.path != source for window in windows):
+            raise ValueError("player-observation windows must share one source")
+        all_ordinals = tuple(
+            sorted(
+                {
+                    frame.frame.ordinal
+                    for window in windows
+                    for frame in window.normalized_frames
+                }
+            )
+        )
+        decoded = self._frames(source, all_ordinals)
+        sampled = tuple(_sampled_player_ordinals(window) for window in windows)
+        _LOG.info(
+            "Running player detection on %d sampled frames from %d decoded frames",
+            len({ordinal for group in sampled for ordinal in group}),
+            len(all_ordinals),
+        )
+        return _observations_from_decoded(sampled, locator, decoded)
+
+    def render_artifacts(
+        self,
+        plans: tuple[ComparisonRenderPlan, ...],
+        compilation: Path,
+        clips: tuple[Path, ...],
+    ) -> None:
+        render_comparison_artifacts(
+            plans,
+            compilation,
+            clips,
+            decoded_sources=self._decoded,
+        )
+
+    def _frames(
+        self, source: Path, ordinals: tuple[int, ...]
+    ) -> dict[int, Path]:
+        decoded = self._decoded.get(source)
+        if decoded is None:
+            directory = Path(self._temporary.name) / f"source_{len(self._decoded):02d}"
+            directory.mkdir()
+            decoded = _decode_frames(source, ordinals, directory)
+            self._decoded[source] = decoded
+        missing = set(ordinals) - decoded.keys()
+        if missing:
+            raise ValueError(
+                "decoded frame workspace was not initialized with every required frame"
+            )
+        return decoded
+
+    def close(self) -> None:
+        self._temporary.cleanup()
+
+
 def _render_panel(image_path: Path, crop: Rectangle, panel: Rectangle) -> Image.Image:
     with Image.open(image_path) as image:
         cropped = image.crop(
@@ -214,10 +367,107 @@ def _render_panel(image_path: Path, crop: Rectangle, panel: Rectangle) -> Image.
         ).convert("RGB")
 
 
+def _panel_key(
+    ordinal: int, crop: Rectangle, panel: Rectangle
+) -> tuple[int, Rectangle, int, int]:
+    return ordinal, crop, panel.width, panel.height
+
+
+def _prepare_panels(
+    decoded: dict[int, Path],
+    requests: set[tuple[int, Rectangle, int, int]],
+    output_directory: Path,
+) -> dict[tuple[int, Rectangle, int, int], Path]:
+    output_directory.mkdir()
+    prepared = {}
+    for index, key in enumerate(
+        sorted(
+            requests,
+            key=lambda item: (
+                item[0],
+                item[1].x,
+                item[1].y,
+                item[1].width,
+                item[1].height,
+                item[2],
+                item[3],
+            ),
+        )
+    ):
+        ordinal, crop, width, height = key
+        destination = output_directory / f"panel_{index:09d}.png"
+        panel = Rectangle(0, 0, width, height)
+        image = _render_panel(decoded[ordinal], crop, panel)
+        try:
+            image.save(destination)
+        finally:
+            image.close()
+        prepared[key] = destination
+    return prepared
+
+
+def _prepare_render_panels(
+    plans: tuple[ComparisonRenderPlan, ...],
+    temporary: Path,
+    decoded_sources: dict[Path, dict[int, Path]] | None = None,
+) -> tuple[
+    dict[tuple[int, Rectangle, int, int], Path],
+    dict[tuple[int, Rectangle, int, int], Path],
+]:
+    user_source = plans[0].user.window.source.path
+    pro_source = plans[0].pro.window.source.path
+    if any(plan.user.window.source.path != user_source for plan in plans):
+        raise ValueError("comparison plans must share one user source")
+    if any(plan.pro.window.source.path != pro_source for plan in plans):
+        raise ValueError("comparison plans must share one pro source")
+
+    user_requests = {
+        _panel_key(event.user_frame.ordinal, plan.user.crop, plan.layout.user_panel)
+        for plan in plans
+        for event in plan.events
+    }
+    pro_requests = {
+        _panel_key(event.pro_frame.ordinal, plan.pro.crop, plan.layout.pro_panel)
+        for plan in plans
+        for event in plan.events
+    }
+    if decoded_sources is None:
+        user_directory = temporary / "user_frames"
+        pro_directory = temporary / "pro_frames"
+        user_directory.mkdir()
+        pro_directory.mkdir()
+        _LOG.info(
+            "Decoding %d distinct user frames in one source traversal",
+            len({request[0] for request in user_requests}),
+        )
+        user_frames = _decode_frames(
+            user_source,
+            tuple(request[0] for request in user_requests),
+            user_directory,
+        )
+        _LOG.info(
+            "Decoding %d distinct pro frames in one source traversal",
+            len({request[0] for request in pro_requests}),
+        )
+        pro_frames = _decode_frames(
+            pro_source,
+            tuple(request[0] for request in pro_requests),
+            pro_directory,
+        )
+    else:
+        user_frames = decoded_sources[user_source]
+        pro_frames = decoded_sources[pro_source]
+    return (
+        _prepare_panels(user_frames, user_requests, temporary / "user_panels"),
+        _prepare_panels(pro_frames, pro_requests, temporary / "pro_panels"),
+    )
+
+
 def _render_plan_event_images(
     plan: ComparisonRenderPlan,
-    temporary: Path,
     event_directory: Path,
+    user_panels: dict[tuple[int, Rectangle, int, int], Path],
+    pro_panels: dict[tuple[int, Rectangle, int, int], Path],
     *,
     plan_index: int,
     first_event_index: int,
@@ -228,41 +478,34 @@ def _render_plan_event_images(
         len(plan.events),
     )
     started = monotonic()
-    user_directory = temporary / f"user_{plan_index:03d}"
-    pro_directory = temporary / f"pro_{plan_index:03d}"
-    user_directory.mkdir()
-    pro_directory.mkdir()
-    user_frames = _decode_frames(
-        plan.user.window.source.path,
-        tuple(event.user_frame.ordinal for event in plan.events),
-        user_directory,
-    )
-    pro_frames = _decode_frames(
-        plan.pro.window.source.path,
-        tuple(event.pro_frame.ordinal for event in plan.events),
-        pro_directory,
-    )
     for offset, event in enumerate(plan.events):
         canvas = Image.new(
             "RGB", (plan.layout.output.width, plan.layout.output.height), "black"
         )
-        canvas.paste(
-            _render_panel(
-                user_frames[event.user_frame.ordinal],
+        user_path = user_panels[
+            _panel_key(
+                event.user_frame.ordinal,
                 plan.user.crop,
                 plan.layout.user_panel,
-            ),
-            plan.layout.user_panel.x_y,
-        )
-        canvas.paste(
-            _render_panel(
-                pro_frames[event.pro_frame.ordinal],
+            )
+        ]
+        pro_path = pro_panels[
+            _panel_key(
+                event.pro_frame.ordinal,
                 plan.pro.crop,
                 plan.layout.pro_panel,
-            ),
-            plan.layout.pro_panel.x_y,
-        )
-        canvas.save(event_directory / f"event_{first_event_index + offset:09d}.png")
+            )
+        ]
+        with Image.open(user_path) as user_panel:
+            canvas.paste(user_panel, plan.layout.user_panel.x_y)
+        with Image.open(pro_path) as pro_panel:
+            canvas.paste(pro_panel, plan.layout.pro_panel.x_y)
+        try:
+            canvas.save(
+                event_directory / f"event_{first_event_index + offset:09d}.png"
+            )
+        finally:
+            canvas.close()
     _LOG.info(
         "Finished materializing comparison %d in %.1fs",
         plan_index + 1,
@@ -279,8 +522,8 @@ def _encode_event_images(
 ) -> None:
     _LOG.info("Encoding %d materialized events: %s", len(ticks), output)
     started = monotonic()
-    tick_expression = "+".join(
-        f"{tick}*eq(N\\,{index})" for index, tick in enumerate(ticks)
+    tick_expression = _balanced_addition(
+        [f"{tick}*eq(N\\,{index})" for index, tick in enumerate(ticks)]
     )
     _run_media_command(
         [
@@ -321,10 +564,12 @@ def render_comparison(plan: ComparisonRenderPlan) -> Path:
         temporary = Path(directory)
         event_directory = temporary / "events"
         event_directory.mkdir()
+        user_panels, pro_panels = _prepare_render_panels((plan,), temporary)
         _render_plan_event_images(
             plan,
-            temporary,
             event_directory,
+            user_panels,
+            pro_panels,
             plan_index=0,
             first_event_index=0,
         )
@@ -354,24 +599,102 @@ def render_compilation(
         temporary = Path(directory)
         event_directory = temporary / "events"
         event_directory.mkdir()
-        ticks: list[int] = []
-        next_clip_tick = 0
-        event_index = 0
-        for plan_index, plan in enumerate(plans):
-            event_index = _render_plan_event_images(
-                plan,
-                temporary,
-                event_directory,
-                plan_index=plan_index,
-                first_event_index=event_index,
-            )
-            for event in plan.events:
-                plan_tick_scale = timescale // plan.output_time_base.denominator
-                ticks.append(next_clip_tick + event.output_tick * plan_tick_scale)
-            next_clip_tick = ticks[-1] + 1
-
-        if ticks[-1] > MAX_EXACT_FILTER_TICK:
-            raise ValueError("compilation ticks exceed the renderer's exact range")
-
+        user_panels, pro_panels = _prepare_render_panels(plans, temporary)
+        ticks = _materialize_compilation_events(
+            plans, event_directory, user_panels, pro_panels, timescale
+        )
         _encode_event_images(event_directory, ticks, timescale, output)
     return output
+
+
+def _materialize_compilation_events(
+    plans: tuple[ComparisonRenderPlan, ...],
+    event_directory: Path,
+    user_panels: dict[tuple[int, Rectangle, int, int], Path],
+    pro_panels: dict[tuple[int, Rectangle, int, int], Path],
+    timescale: int,
+) -> list[int]:
+    ticks: list[int] = []
+    next_clip_tick = 0
+    event_index = 0
+    for plan_index, plan in enumerate(plans):
+        event_index = _render_plan_event_images(
+            plan,
+            event_directory,
+            user_panels,
+            pro_panels,
+            plan_index=plan_index,
+            first_event_index=event_index,
+        )
+        plan_tick_scale = timescale // plan.output_time_base.denominator
+        ticks.extend(
+            next_clip_tick + event.output_tick * plan_tick_scale
+            for event in plan.events
+        )
+        next_clip_tick = ticks[-1] + 1
+    if ticks[-1] > MAX_EXACT_FILTER_TICK:
+        raise ValueError("compilation ticks exceed the renderer's exact range")
+    return ticks
+
+
+def render_comparison_artifacts(
+    plans: tuple[ComparisonRenderPlan, ...],
+    compilation: Path,
+    clips: tuple[Path, ...],
+    *,
+    decoded_sources: dict[Path, dict[int, Path]] | None = None,
+) -> None:
+    """Render all artifacts from one decoded and prepared frame set."""
+
+    if not plans:
+        raise ValueError("at least one comparison plan is required")
+    if clips and len(clips) != len(plans):
+        raise ValueError("clip count must match comparison plan count")
+    if clips and any(
+        plan.artifact.path != clip
+        for plan, clip in zip(plans, clips, strict=True)
+    ):
+        raise ValueError("clip artifact does not match its render plan")
+    _LOG.info("Preparing materialized compilation for %d comparison(s)", len(plans))
+    timescale = lcm(*(plan.output_time_base.denominator for plan in plans))
+    if timescale > MAX_OUTPUT_TIMESCALE:
+        raise ValueError("compilation requires an unsupported output timescale")
+
+    compilation.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as directory:
+        temporary = Path(directory)
+        user_panels, pro_panels = _prepare_render_panels(
+            plans, temporary, decoded_sources
+        )
+        compilation_events = temporary / "compilation_events"
+        compilation_events.mkdir()
+        ticks = _materialize_compilation_events(
+            plans,
+            compilation_events,
+            user_panels,
+            pro_panels,
+            timescale,
+        )
+        _encode_event_images(compilation_events, ticks, timescale, compilation)
+
+        if clips:
+            for plan_index, (plan, clip) in enumerate(
+                zip(plans, clips, strict=True)
+            ):
+                clip.parent.mkdir(parents=True, exist_ok=True)
+                clip_events = temporary / f"clip_events_{plan_index:03d}"
+                clip_events.mkdir()
+                _render_plan_event_images(
+                    plan,
+                    clip_events,
+                    user_panels,
+                    pro_panels,
+                    plan_index=plan_index,
+                    first_event_index=0,
+                )
+                _encode_event_images(
+                    clip_events,
+                    [event.output_tick for event in plan.events],
+                    plan.output_time_base.denominator,
+                    clip,
+                )
