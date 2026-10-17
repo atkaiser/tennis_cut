@@ -10,13 +10,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from fractions import Fraction
-import json
 import logging
 from pathlib import Path
-import subprocess
 import tempfile
 from time import monotonic
 from typing import Literal, Protocol
+
+from tennis_cut.source_frames import (
+    IndexedFrame,
+    decode_exact_frame_windows,
+    inspect_source_frame_index,
+)
 
 ObjectKind = Literal["person", "ball", "racket"]
 FEATURE_VERSION = 1
@@ -802,106 +806,74 @@ def select_contact_frame(
     )
 
 
-def _materialize_exact_frame_paths(
+def _materialize_consumer_frame_paths(
     source: Path,
-    ordinals: tuple[int, ...],
+    frames: tuple[IndexedFrame, ...],
     output_directory: Path,
 ) -> dict[int, Path]:
-    """Decode requested ordinals in one FFmpeg traversal."""
+    """Decode consumer-sized frames from bounded candidate windows."""
 
-    unique_ordinals = tuple(sorted(set(ordinals)))
-    if not unique_ordinals:
+    unique = {frame.ordinal: frame for frame in frames}
+    ordered = tuple(unique[ordinal] for ordinal in sorted(unique))
+    if not ordered:
         return {}
     _LOG.info(
-        "Decoding %d exact source frames from %s (ordinals %d-%d)",
-        len(unique_ordinals),
+        "Decoding %d consumer-sized frames from %s (ordinals %d-%d)",
+        len(ordered),
         source,
-        unique_ordinals[0],
-        unique_ordinals[-1],
+        ordered[0].ordinal,
+        ordered[-1].ordinal,
     )
     started = monotonic()
-    ranges: list[tuple[int, int]] = []
-    range_start = unique_ordinals[0]
-    range_end = range_start
-    for ordinal in unique_ordinals[1:]:
-        if ordinal == range_end + 1:
-            range_end = ordinal
-            continue
-        ranges.append((range_start, range_end))
-        range_start = range_end = ordinal
-    ranges.append((range_start, range_end))
-    selection = "+".join(
-        f"eq(n\\,{start})"
-        if start == end
-        else f"between(n\\,{start}\\,{end})"
-        for start, end in ranges
+    paths = decode_exact_frame_windows(
+        source,
+        ordered,
+        output_directory,
+        max_dimension=1280,
     )
-    completed = subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-noautorotate",
-            "-i",
-            str(source),
-            "-map",
-            "0:v:0",
-            "-vf",
-            f"select={selection}",
-            "-fps_mode",
-            "passthrough",
-            "-start_number",
-            "0",
-            str(output_directory / "frame_%09d.png"),
-            "-y",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            "could not decode exact source frames: " + completed.stderr.strip()
-        )
-    paths = tuple(sorted(output_directory.glob("frame_*.png")))
-    if len(paths) != len(unique_ordinals):
-        raise ValueError("failed to decode every requested source frame")
     _LOG.info(
-        "Finished exact source-frame decode: %d frames in %.1fs",
+        "Finished consumer-sized frame decode: %d frames in %.1fs",
         len(paths),
         monotonic() - started,
     )
-    return dict(zip(unique_ordinals, paths, strict=True))
+    return paths
 
 
 def decode_exact_frame_images(
     source: Path, ordinals: tuple[int, ...]
 ) -> dict[int, object]:
-    """Decode images by FFmpeg ordinal so pixels and frame identities agree."""
+    """Decode consumer-sized images by ordinal while preserving frame identity."""
 
     import cv2
 
+    index = inspect_source_frame_index(source)
+    wanted = set(ordinals)
+    frames = tuple(frame for frame in index.frames if frame.ordinal in wanted)
+    if len(frames) != len(wanted):
+        raise ValueError("requested source frame does not exist")
     with tempfile.TemporaryDirectory() as directory_name:
-        paths = _materialize_exact_frame_paths(
+        paths = _materialize_consumer_frame_paths(
             source,
-            ordinals,
+            frames,
             Path(directory_name),
         )
         images = {}
         for ordinal, path in paths.items():
             image = cv2.imread(str(path), cv2.IMREAD_COLOR)
             if image is None:
-                raise ValueError(f"could not read decoded source frame {ordinal}")
+                raise ValueError(f"could not read consumer-sized frame {ordinal}")
             images[ordinal] = image
     return images
 
 
 class _StockVisualEvidence:
-    """Decode exact source frames and run the stock YOLO detector lazily."""
+    """Decode consumer-sized frames and run the stock YOLO detector lazily."""
 
     def __init__(
         self,
         device: str | None = None,
         frame_timeline: FrameTimeline | None = None,
+        source_size: tuple[int, int] | None = None,
     ) -> None:
         self.device = device
         self._model = None
@@ -913,6 +885,7 @@ class _StockVisualEvidence:
                 for frame in frame_timeline.frames
             )
         )
+        self._source_size = source_size
 
     def _load_model(self):
         if self._model is None:
@@ -930,39 +903,18 @@ class _StockVisualEvidence:
                 len(self._frame_metadata),
             )
             return self._frame_metadata
-        _LOG.info("Scanning complete frame timeline with ffprobe: %s", source)
+        _LOG.info("Indexing source-frame packet timeline with ffprobe: %s", source)
         started = monotonic()
-        completed = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_streams",
-                "-show_frames",
-                "-show_entries",
-                "stream=index,time_base:frame=pts,stream_index",
-                "-of",
-                "json",
-                str(source),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        payload = json.loads(completed.stdout)
-        stream = payload["streams"][0]
-        stream_index = int(stream["index"])
-        time_base = Fraction(stream["time_base"])
+        index = inspect_source_frame_index(source)
+        self._source_size = (index.width, index.height)
         frames = tuple(
-            (ordinal, stream_index, int(frame["pts"]), time_base)
-            for ordinal, frame in enumerate(payload.get("frames", []))
-            if int(frame["stream_index"]) == stream_index
+            (frame.ordinal, frame.stream_index, frame.pts, frame.time_base)
+            for frame in index.frames
         )
         _LOG.info(
-            "Finished frame timeline scan: %d frames in %.1fs",
+            "Finished frame timeline index: %d frames via %s in %.1fs",
             len(frames),
+            index.method,
             monotonic() - started,
         )
         return frames
@@ -991,6 +943,9 @@ class _StockVisualEvidence:
             float(radius),
         )
         metadata = self._frame_timestamps(source)
+        if self._source_size is None:
+            index = inspect_source_frame_index(source)
+            self._source_size = (index.width, index.height)
         selected_windows = tuple(
             tuple(
                 item
@@ -1013,9 +968,16 @@ class _StockVisualEvidence:
         if not ordinals:
             return tuple(() for _candidate in candidate_timestamps)
         with tempfile.TemporaryDirectory() as directory_name:
-            paths = _materialize_exact_frame_paths(
+            paths = _materialize_consumer_frame_paths(
                 source,
-                ordinals,
+                tuple(
+                    IndexedFrame(stream_index, ordinal, pts, time_base)
+                    for ordinal, stream_index, pts, time_base in (
+                        item
+                        for selected in selected_windows
+                        for item in selected
+                    )
+                ),
                 Path(directory_name),
             )
             model = self._load_model()
@@ -1048,7 +1010,7 @@ class _StockVisualEvidence:
         for ordinal, stream_index, pts, time_base in selected:
             image = cv2.imread(str(paths[ordinal]), cv2.IMREAD_COLOR)
             if image is None:
-                raise ValueError(f"could not read decoded source frame {ordinal}")
+                raise ValueError(f"could not read consumer-sized frame {ordinal}")
             images.append(image)
             visual_frames.append(
                 VisualFrame(
@@ -1063,7 +1025,7 @@ class _StockVisualEvidence:
                 )
             )
         _LOG.info(
-            "Running visual detector for candidate %d/%d on %d exact frames",
+            "Running visual detector for candidate %d/%d on %d consumer-sized frames",
             candidate_index,
             candidate_count,
             len(images),
@@ -1084,8 +1046,14 @@ class _StockVisualEvidence:
             candidate_count,
             monotonic() - inference_started,
         )
+        if self._source_size is None:
+            raise ValueError("source dimensions are required for visual detections")
+        source_width, source_height = self._source_size
         populated: list[VisualFrame] = []
-        for frame, result in zip(visual_frames, results, strict=True):
+        for frame, image, result in zip(visual_frames, images, results, strict=True):
+            decoded_height, decoded_width = image.shape[:2]  # type: ignore[attr-defined]
+            x_scale = source_width / decoded_width
+            y_scale = source_height / decoded_height
             detections: list[Detection] = []
             boxes = result.boxes
             if boxes is not None:
@@ -1101,7 +1069,12 @@ class _StockVisualEvidence:
                         detections.append(
                             Detection(
                                 detected_kind,
-                                tuple(float(v) for v in box),
+                                (
+                                    float(box[0]) * x_scale,
+                                    float(box[1]) * y_scale,
+                                    float(box[2]) * x_scale,
+                                    float(box[3]) * y_scale,
+                                ),
                                 float(confidence),
                             )
                         )
@@ -1129,12 +1102,14 @@ class StockVisualContactSelector:
         ranker: TemporalRanker | None = None,
         device: str | None = None,
         frame_timeline: FrameTimeline | None = None,
+        source_size: tuple[int, int] | None = None,
         evidence_provider: _StockVisualEvidence | None = None,
         decision_cache: object | None = _DEFAULT_CACHE,
     ) -> None:
         self.ranker = ranker
         self.device = device
         self.frame_timeline = frame_timeline
+        self.source_size = source_size
         self.evidence_provider = evidence_provider
         if decision_cache is _DEFAULT_CACHE:
             from .contact_cache import ContactDecisionCache
@@ -1190,7 +1165,7 @@ class StockVisualContactSelector:
             return cached
         if self.evidence_provider is None:
             self.evidence_provider = _StockVisualEvidence(
-                self.device, self.frame_timeline
+                self.device, self.frame_timeline, self.source_size
             )
         provider = self.evidence_provider
         if radius <= DEFAULT_VISUAL_SEARCH_RADIUS:
@@ -1233,7 +1208,7 @@ class StockVisualContactSelector:
     ) -> tuple[ContactSelection, ...]:
         if self.evidence_provider is None:
             self.evidence_provider = _StockVisualEvidence(
-                self.device, self.frame_timeline
+                self.device, self.frame_timeline, self.source_size
             )
         provider = self.evidence_provider
         selections: list[ContactSelection | None] = [

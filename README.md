@@ -55,8 +55,12 @@ tennis-compare USER_VIDEO PRO_VIDEO --pro-speed FACTOR
 `FACTOR` describes the pro video's published speed (`1.0` for real time or
 `0.25` for quarter speed). Use `--slowmo`, `--output-dir`, and `--clips` to
 override the playback factor, destination, or optional comparison clip output.
-Normal runs print timestamped progress for long inspection, detection, and
-rendering stages; use `--quiet` to show errors only.
+Normal runs print timestamped progress for source-frame indexing, detection,
+candidate-window decoding, and rendering; use `--quiet` to show errors only.
+User swings whose classified shot type does not match the professional swing
+are discarded before visual-contact decoding. Detector images and render
+panels are decoded directly at their consumer dimensions rather than passing
+through full-resolution PNG files.
 
 The professional reference should be a trimmed forehand clip with contact in
 the middle 75% of its duration. The command searches that region with the same

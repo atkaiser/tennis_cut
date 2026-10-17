@@ -130,7 +130,10 @@ class ComparisonDependencies(Protocol):
     ) -> ProSelection | SelectionProcessingFailure: ...
 
     def detect_swings(
-        self, request: ComparisonRequest, user_source: ComparisonSource
+        self,
+        request: ComparisonRequest,
+        user_source: ComparisonSource,
+        required_shot_type: str,
     ) -> tuple[DetectedSwing, ...]: ...
 
     def create_player_locator(self, device: str | None) -> PlayerLocator: ...
@@ -166,11 +169,11 @@ class SystemComparisonDependencies:
     def inspect_source(self, path: Path) -> ComparisonSource:
         from .media import inspect_comparison_source
 
-        _LOG.info("Inspecting video metadata: %s", path)
+        _LOG.info("Indexing source frames: %s", path)
         started = monotonic()
         source = inspect_comparison_source(path)
         _LOG.info(
-            "Finished video metadata: %s (%d frames, %dx%d) in %.1fs",
+            "Finished source-frame index: %s (%d frames, %dx%d) in %.1fs",
             path,
             len(source.inspected_media.frames),
             source.width,
@@ -223,7 +226,10 @@ class SystemComparisonDependencies:
         return selection
 
     def detect_swings(
-        self, request: ComparisonRequest, user_source: ComparisonSource
+        self,
+        request: ComparisonRequest,
+        user_source: ComparisonSource,
+        required_shot_type: str,
     ) -> tuple[DetectedSwing, ...]:
         _LOG.info("Detecting swing candidates and visual contacts: %s", request.user_video)
         started = monotonic()
@@ -232,6 +238,7 @@ class SystemComparisonDependencies:
                 request.user_video,
                 request.detection_config,
                 frame_timeline=user_source.inspected_media,
+                required_shot_type=required_shot_type,
             )
             _LOG.info(
                 "Finished swing detection: %d accepted swings in %.1fs",
@@ -252,6 +259,7 @@ class SystemComparisonDependencies:
                 request.detection_config,
                 frame_timeline=user_source.inspected_media,
                 diagnostics=recorder,
+                required_shot_type=required_shot_type,
             )
             _LOG.info(
                 "Finished swing detection: %d accepted swings in %.1fs",
@@ -339,7 +347,7 @@ class SystemComparisonDependencies:
             self._decoded_frame_workspace = DecodedFrameWorkspace()
         role = "professional" if windows[0].swing_ordinal is None else "user"
         _LOG.info(
-            "Locating players for %d %s window(s) in one source traversal",
+            "Locating players for %d %s candidate window(s)",
             len(windows),
             role,
         )
@@ -365,16 +373,10 @@ class SystemComparisonDependencies:
 
         _LOG.info("Rendering comparison compilation with %d swing(s): %s", len(plans), primary)
         started = monotonic()
-        if self._decoded_frame_workspace is None:
-            render_comparison_artifacts(plans, primary, clips)
-        else:
-            try:
-                self._decoded_frame_workspace.render_artifacts(
-                    plans, primary, clips
-                )
-            finally:
-                self._decoded_frame_workspace.close()
-                self._decoded_frame_workspace = None
+        if self._decoded_frame_workspace is not None:
+            self._decoded_frame_workspace.close()
+            self._decoded_frame_workspace = None
+        render_comparison_artifacts(plans, primary, clips)
         _LOG.info("Finished comparison compilation in %.1fs", monotonic() - started)
 
 
@@ -520,7 +522,11 @@ def compare_videos(
         )
 
     try:
-        swings = dependencies.detect_swings(request, user_source)
+        swings = dependencies.detect_swings(
+            request,
+            user_source,
+            selection.shot_type,
+        )
         windows = select_comparison_windows(
             user_source=user_source,
             user_swings=swings,

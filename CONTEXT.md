@@ -16,6 +16,17 @@ _Avoid_: Reference video, player video
 A single tennis stroke, from preparation through follow-through.
 _Avoid_: Shot, when referring to the complete motion
 
+**Candidate window**:
+A bounded source-time view around a plausible Swing. It retains the original
+source-frame identities and is not a separately encoded video.
+_Avoid_: Clip, temporary video
+
+**Consumer-sized frame**:
+An exact source frame decoded directly at the dimensions needed by a detector
+or render panel. Its pixels may be scaled or cropped, while its source ordinal
+and presentation timestamp remain unchanged.
+_Avoid_: Source frame, when referring to the transformed image
+
 **Contact timestamp**:
 The presentation time of the contact frame selected for a swing. It is the swing's alignment anchor, not a claim that the source captured the physical instant of contact exactly.
 _Avoid_: Impact time, contact point

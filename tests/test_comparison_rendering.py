@@ -17,9 +17,7 @@ from PIL import Image, ImageDraw, ImageStat
 from tennis_cut.comparison.cli import main
 from tennis_cut.comparison.media import (
     DecodedFrameWorkspace,
-    _decode_frames,
     _encode_event_images,
-    _render_panel,
     inspect_comparison_source,
     observe_players,
     render_comparison_artifacts,
@@ -29,6 +27,7 @@ from tennis_cut.comparison.planning import (
     ComparisonSource,
     NormalizedFrame,
     PlayerObservation,
+    Rectangle,
     SelectedSourceWindow,
 )
 from tennis_cut.comparison.pro_selection import (
@@ -38,6 +37,7 @@ from tennis_cut.comparison.pro_selection import (
 )
 from tennis_cut.comparison.workflow import ComparisonRequest
 from tennis_cut.swing_detection import DetectedSwing
+from tennis_cut.source_frames import decode_exact_frame_windows
 
 
 class WhitePlayerLocator:
@@ -187,7 +187,10 @@ class GeneratedWorkflowDependencies:
         return ProSelection(pro_video, inspected_media.frames[25], "forehand")
 
     def detect_swings(
-        self, request: ComparisonRequest, user_source: ComparisonSource
+        self,
+        request: ComparisonRequest,
+        user_source: ComparisonSource,
+        required_shot_type: str,
     ) -> tuple[DetectedSwing, ...]:
         return (
             DetectedSwing(2, Fraction(5, 2), "forehand"),
@@ -212,17 +215,15 @@ class GeneratedWorkflowDependencies:
         self.rendered_plans.append(plans)
         with (
             patch(
-                "tennis_cut.comparison.media._decode_frames",
-                wraps=_decode_frames,
+                "tennis_cut.comparison.media.decode_exact_frame_windows",
+                wraps=decode_exact_frame_windows,
             ) as decode,
-            patch(
-                "tennis_cut.comparison.media._render_panel",
-                wraps=_render_panel,
-            ) as render_panel,
         ):
             render_comparison_artifacts(plans, primary, clips)
         self.compilation_decode_sources = [call.args[0] for call in decode.call_args_list]
-        self.compilation_panel_count = render_panel.call_count
+        self.compilation_panel_count = sum(
+            len(call.args[1]) for call in decode.call_args_list
+        )
 
 
 def probe_output(video: Path) -> dict:
@@ -247,7 +248,69 @@ def probe_output(video: Path) -> dict:
 
 
 class GeneratedMediaRenderingTests(unittest.TestCase):
-    def test_player_windows_share_one_decode_with_render_and_one_sparse_batch(
+    def test_disjoint_exact_frames_are_seek_decoded_from_original_pts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = create_source(
+                directory,
+                name="seeked-user",
+                frame_count=31,
+                rate=10,
+                timescale=1000,
+                role="user",
+            )
+            source = inspect_comparison_source(source_path)
+            requested = (source.inspected_media.frames[2], source.inspected_media.frames[27])
+
+            decoded = decode_exact_frame_windows(
+                source_path,
+                requested,
+                directory / "decoded",
+                source_start_timestamp=source.inspected_media.frames[0].timestamp,
+            )
+
+            self.assertEqual(tuple(decoded), (2, 27))
+            for ordinal, path in decoded.items():
+                with Image.open(path) as image:
+                    median = ImageStat.Stat(image.convert("RGB")).median
+                self.assertEqual(decoded_ordinal(median, "user", 31), ordinal)
+
+    def test_exact_frames_are_resized_during_decode_for_their_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = create_source(
+                directory,
+                name="resized-user",
+                frame_count=8,
+                rate=10,
+                timescale=1000,
+                role="user",
+            )
+            source = inspect_comparison_source(source_path)
+            frame = source.inspected_media.frames[4]
+
+            resized = decode_exact_frame_windows(
+                source_path,
+                (frame,),
+                directory / "resized",
+                source_start_timestamp=source.inspected_media.frames[0].timestamp,
+                max_dimension=160,
+            )
+            panel = decode_exact_frame_windows(
+                source_path,
+                (frame,),
+                directory / "panel",
+                source_start_timestamp=source.inspected_media.frames[0].timestamp,
+                crop=(0, 0, 160, 180),
+                output_size=(80, 90),
+            )
+
+            with Image.open(resized[4]) as image:
+                self.assertEqual(image.size, (160, 90))
+            with Image.open(panel[4]) as image:
+                self.assertEqual(image.size, (80, 90))
+
+    def test_player_windows_decode_only_scaled_sparse_detection_frames(
         self,
     ) -> None:
         frames = tuple(
@@ -287,32 +350,36 @@ class GeneratedMediaRenderingTests(unittest.TestCase):
 
         locator = BatchLocator()
         workspace = DecodedFrameWorkspace()
-        try:
-            with (
-                patch(
-                    "tennis_cut.comparison.media._decode_frames",
-                    side_effect=lambda _source, ordinals, _directory: {
-                        ordinal: Path(f"frame-{ordinal}.png") for ordinal in ordinals
-                    },
-                ) as decode,
-                patch(
-                    "tennis_cut.comparison.media.render_comparison_artifacts"
-                ) as render,
-            ):
-                observations = workspace.observe_players_many(windows, locator)
-                workspace.render_artifacts((), Path("comparison.mp4"), ())
-        finally:
-            workspace.close()
+        with tempfile.TemporaryDirectory() as decoded_directory_name:
+            decoded_directory = Path(decoded_directory_name)
+
+            def decode_side_effect(_source, frames, _directory, **kwargs):
+                decoded = {}
+                for frame in frames:
+                    path = decoded_directory / f"frame-{frame.ordinal}.png"
+                    Image.new("RGB", (1280, 720), "black").save(path)
+                    decoded[frame.ordinal] = path
+                return decoded
+
+            try:
+                with patch(
+                    "tennis_cut.comparison.media.decode_exact_frame_windows",
+                    side_effect=decode_side_effect,
+                ) as decode:
+                    observations = workspace.observe_players_many(windows, locator)
+            finally:
+                workspace.close()
 
         decode.assert_called_once()
-        decoded_ordinals = decode.call_args.args[1]
-        self.assertEqual(len(decoded_ordinals), 379)
+        decoded_frames = decode.call_args.args[1]
+        self.assertLessEqual(len(decoded_frames), 42)
+        self.assertEqual(decode.call_args.kwargs["max_dimension"], 1280)
         self.assertEqual(len(locator.calls), 1)
         self.assertLessEqual(len(locator.calls[0]), 42)
-        render.assert_called_once()
-        self.assertIn(source.path, render.call_args.kwargs["decoded_sources"])
         self.assertTrue({0, 144, 228}.issubset({item.frame_ordinal for item in observations[0]}))
         self.assertTrue({150, 294, 378}.issubset({item.frame_ordinal for item in observations[1]}))
+        first_bounds = observations[0][0].bounds
+        self.assertEqual(first_bounds, Rectangle(30, 60, 300, 600))
 
     def test_encoder_handles_large_materialized_compilation(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
@@ -410,8 +477,8 @@ class GeneratedMediaRenderingTests(unittest.TestCase):
                     self.assertEqual(len(dependencies.rendered_plans), 1)
                     plans = dependencies.rendered_plans[0]
                     self.assertEqual(
-                        dependencies.compilation_decode_sources,
-                        [user_path, pro_path],
+                        set(dependencies.compilation_decode_sources),
+                        {user_path, pro_path},
                     )
                     expected_panels = {
                         (

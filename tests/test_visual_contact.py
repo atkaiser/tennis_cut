@@ -24,6 +24,11 @@ from tennis_cut.visual_contact import (
     select_contact_frame,
 )
 from tennis_cut.comparison.pro_selection import DecodedFrame, InspectedMedia
+from tennis_cut.source_frames import (
+    IndexedFrame,
+    decode_exact_frame_windows,
+    inspect_source_frame_index,
+)
 
 
 def detection(
@@ -245,6 +250,47 @@ class VisualContactSelectionTests(unittest.TestCase):
 
 
 class ExactVisualFrameDecodingTests(unittest.TestCase):
+    def test_maps_scaled_detector_boxes_back_to_source_coordinates(self) -> None:
+        class Values:
+            def __init__(self, values):
+                self.values = values
+
+            def cpu(self):
+                return self
+
+            def tolist(self):
+                return self.values
+
+        class Boxes:
+            xyxy = Values([[10, 20, 110, 220]])
+            cls = Values([0])
+            conf = Values([0.9])
+
+        class Result:
+            boxes = Boxes()
+
+        class Model:
+            def predict(self, _images, **_options):
+                return [Result()]
+
+        class ScaledImage:
+            shape = (360, 640, 3)
+
+        provider = _StockVisualEvidence(
+            device="cpu",
+            source_size=(1920, 1080),
+        )
+        with patch("cv2.imread", return_value=ScaledImage()):
+            frames = provider._detect_materialized_window(
+                ((4, 0, 40, Fraction(1, 10)),),
+                {4: Path("frame.png")},
+                Model(),
+                candidate_index=1,
+                candidate_count=1,
+            )
+
+        self.assertEqual(frames[0].evidence.detections[0].box, (30, 60, 330, 660))
+
     def test_reuses_preinspected_timeline_without_running_ffprobe(self) -> None:
         timeline = InspectedMedia(
             (
@@ -254,11 +300,11 @@ class ExactVisualFrameDecodingTests(unittest.TestCase):
         )
         provider = _StockVisualEvidence(device="cpu", frame_timeline=timeline)
 
-        with patch("tennis_cut.visual_contact.subprocess.run") as run:
+        with patch("tennis_cut.visual_contact.inspect_source_frame_index") as inspect:
             first = provider._frame_timestamps(Path("user.mov"))
             second = provider._frame_timestamps(Path("user.mov"))
 
-        run.assert_not_called()
+        inspect.assert_not_called()
         self.assertEqual(first, second)
         self.assertEqual(
             first,
@@ -313,13 +359,16 @@ class ExactVisualFrameDecodingTests(unittest.TestCase):
             )
 
     def test_evidence_images_share_the_ffprobe_ordinals_attached_to_them(self) -> None:
-        provider = _StockVisualEvidence(device="cpu")
+        provider = _StockVisualEvidence(device="cpu", source_size=(64, 36))
         metadata = (
             (10, 0, 100, Fraction(1, 100)),
             (11, 0, 110, Fraction(1, 100)),
             (12, 0, 120, Fraction(1, 100)),
         )
-        exact_images = {10: object(), 11: object(), 12: object()}
+        class ExactImage:
+            shape = (36, 64, 3)
+
+        exact_images = {10: ExactImage(), 11: ExactImage(), 12: ExactImage()}
 
         class EmptyValues:
             def cpu(self):
@@ -348,7 +397,7 @@ class ExactVisualFrameDecodingTests(unittest.TestCase):
             patch.object(provider, "_frame_timestamps", return_value=metadata),
             patch.object(provider, "_load_model", return_value=model),
             patch(
-                "tennis_cut.visual_contact._materialize_exact_frame_paths",
+                "tennis_cut.visual_contact._materialize_consumer_frame_paths",
                 return_value={ordinal: Path(str(ordinal)) for ordinal in exact_images},
             ) as materialize,
             patch(
@@ -365,12 +414,19 @@ class ExactVisualFrameDecodingTests(unittest.TestCase):
         self.assertEqual(materialize.call_count, 1)
         self.assertEqual(
             materialize.call_args.args[:2],
-            (Path("variable-frame-rate.mov"), (10, 11, 12)),
+            (
+                Path("variable-frame-rate.mov"),
+                (
+                    IndexedFrame(0, 10, 100, Fraction(1, 100)),
+                    IndexedFrame(0, 11, 110, Fraction(1, 100)),
+                    IndexedFrame(0, 12, 120, Fraction(1, 100)),
+                ),
+            ),
         )
         self.assertEqual(model.observed_images, [exact_images[index] for index in (10, 11, 12)])
         self.assertEqual([frame.ordinal for frame in frames], [10, 11, 12])
 
-    def test_batches_candidate_windows_into_one_ffmpeg_decode(self) -> None:
+    def test_batches_candidate_windows_into_one_exact_decode_request(self) -> None:
         class EmptyValues:
             def cpu(self):
                 return self
@@ -420,20 +476,15 @@ class ExactVisualFrameDecodingTests(unittest.TestCase):
                 ],
                 check=True,
             )
-            timeline = InspectedMedia(
-                tuple(
-                    DecodedFrame(0, ordinal, ordinal, Fraction(1, 5))
-                    for ordinal in range(4)
-                )
-            )
+            timeline = InspectedMedia(inspect_source_frame_index(video).frames)
             provider = _StockVisualEvidence(device="cpu", frame_timeline=timeline)
 
             with (
                 patch.object(provider, "_load_model", return_value=Model()),
                 patch(
-                    "tennis_cut.visual_contact.subprocess.run",
-                    wraps=subprocess.run,
-                ) as run,
+                    "tennis_cut.visual_contact.decode_exact_frame_windows",
+                    wraps=decode_exact_frame_windows,
+                ) as decode,
             ):
                 windows = provider.frames_many(
                     video,
@@ -441,7 +492,7 @@ class ExactVisualFrameDecodingTests(unittest.TestCase):
                     radius=Fraction(1, 5),
                 )
 
-        self.assertEqual(run.call_count, 1)
+        self.assertEqual(decode.call_count, 1)
         self.assertEqual(
             tuple(tuple(item.ordinal for item in window) for window in windows),
             ((0, 1, 2), (2, 3)),

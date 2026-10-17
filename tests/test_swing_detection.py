@@ -534,6 +534,57 @@ class DetectUserSwingsTests(unittest.TestCase):
             (Fraction(1), Fraction(3)),
         )
 
+    def test_comparison_filters_mismatched_shot_types_before_visual_contact(self) -> None:
+        source = Path("user.mp4")
+        details = tuple(
+            LegacySwingDetails(
+                DetectedSwing(index, timestamp, shot_type),
+                float(timestamp),
+                float(timestamp - 1),
+                float(timestamp + 1),
+                (0, 0, 1, 1),
+                audio_candidate_index=10 + index,
+            )
+            for index, (timestamp, shot_type) in enumerate(
+                ((Fraction(1), "backhand"), (Fraction(3), "forehand"))
+            )
+        )
+        selector = Mock()
+        selector.select.side_effect = (
+            ContactSelection(
+                VisualFrame(FrameEvidence(360, Fraction(3), ())),
+                0.9,
+                (360,),
+                None,
+            ),
+        )
+        diagnostics = Mock()
+
+        with (
+            patch(
+                "tennis_cut.swing_detection._detect_user_swings_with_details",
+                return_value=details,
+            ),
+            patch(
+                "tennis_cut.swing_detection.probe_video",
+                return_value={"resolution": (1920, 1080)},
+            ),
+        ):
+            swings = detect_comparison_user_swings(
+                source,
+                DetectionConfig(),
+                contact_selector=selector,
+                diagnostics=diagnostics,
+                required_shot_type="forehand",
+            )
+
+        selector.select.assert_called_once_with(source, Fraction(3))
+        diagnostics.omit.assert_called_once_with(
+            10,
+            "shot type backhand does not match pro shot type forehand",
+        )
+        self.assertEqual(tuple(swing.shot_type for swing in swings), ("forehand",))
+
     def test_comparison_loads_configured_ranker_into_stock_selector(self) -> None:
         source = Path("user.mp4")
         details = (
@@ -576,6 +627,7 @@ class DetectUserSwingsTests(unittest.TestCase):
             device=None,
             ranker=ranker,
             frame_timeline=frame_timeline,
+            source_size=(1920, 1080),
         )
         self.assertEqual(swings[0].contact_timestamp, Fraction(17, 120))
 

@@ -1,0 +1,7 @@
+# Index packets and decode candidate windows
+
+Comparison processing obtains the presentation timeline from container packet PTS values and decodes only merged candidate windows with bounded parallel seeks. Packet indexing preserves original source identities without decoding the entire video. It is used only when the container declares a frame count, every relevant packet has a PTS, the in-range packet count matches the declared frame count, and those PTS values are unique; other sources fall back to decoded-frame inspection. Candidate windows remain views into the original source rather than re-encoded clips, because stream-copy boundaries include keyframe preroll and re-encoding can change frames or timestamps.
+
+Pixel decoding is deferred until a consumer is known. Visual-contact and player-detection frames are scaled to the detector's maximum input dimension during FFmpeg decoding. Render panels are cropped and resized during the same decode. Full-resolution PNGs are therefore not used as an interchange format. Visual-contact and player detections made on scaled frames are mapped back into source coordinates before feature extraction or crop planning.
+
+For comparisons, the professional swing's shot type is also passed into user-swing detection. Candidates classified as a different shot type are omitted before visual-contact frames are decoded. This preserves the classifier decision in diagnostics and avoids expensive contact work for swings the comparison planner cannot use.

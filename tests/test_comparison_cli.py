@@ -150,7 +150,10 @@ class ValidDependencies:
         return ProSelection(pro_video, inspected_media.frames[15])
 
     def detect_swings(
-        self, request: ComparisonRequest, user_source: ComparisonSource
+        self,
+        request: ComparisonRequest,
+        user_source: ComparisonSource,
+        required_shot_type: str,
     ) -> tuple[DetectedSwing, ...]:
         return (DetectedSwing(0, Fraction(3, 2), "forehand"),)
 
@@ -203,7 +206,10 @@ class StoppedSelectionDependencies(ValidDependencies):
         return self.result
 
     def detect_swings(
-        self, request: ComparisonRequest, user_source: ComparisonSource
+        self,
+        request: ComparisonRequest,
+        user_source: ComparisonSource,
+        required_shot_type: str,
     ) -> tuple[DetectedSwing, ...]:
         raise AssertionError("models must remain lazy when selection does not complete")
 

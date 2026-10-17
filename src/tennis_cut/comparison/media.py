@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from fractions import Fraction
 import json
@@ -11,9 +12,15 @@ from pathlib import Path
 import subprocess
 import tempfile
 from time import monotonic
-from typing import Protocol
+from typing import Literal, Protocol
 
 from PIL import Image
+
+from tennis_cut.source_frames import (
+    IndexedFrame,
+    decode_exact_frame_windows,
+    inspect_source_frame_index,
+)
 
 from .planning import (
     MAX_EXACT_FILTER_TICK,
@@ -47,75 +54,35 @@ def _run_media_command(command: list[str]) -> subprocess.CompletedProcess[str]:
     return completed
 
 
-@dataclass(frozen=True)
-class _InspectedVideo:
-    width: int
-    height: int
-    media: InspectedMedia
-
-
-def _inspect_video(video: Path) -> _InspectedVideo:
-    completed = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_streams",
-            "-show_frames",
-            "-show_entries",
-            "stream=index,time_base,width,height:frame=stream_index,pts",
-            "-of",
-            "json",
-            str(video),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(completed.stdout)
-    streams = payload.get("streams", [])
-    if len(streams) != 1:
-        raise ValueError("expected exactly one selected video stream")
-    stream = streams[0]
-    stream_index = int(stream["index"])
-    time_base = Fraction(stream["time_base"])
-    frames = tuple(
-        DecodedFrame(
-            stream_index=int(frame["stream_index"]),
-            ordinal=ordinal,
-            pts=int(frame["pts"]),
-            time_base=time_base,
-        )
-        for ordinal, frame in enumerate(payload.get("frames", []))
-    )
-    if not frames:
-        raise ValueError("selected video stream has no decoded frames")
-    if any(frame.stream_index != stream_index for frame in frames):
-        raise ValueError("decoded frame belongs to an unexpected stream")
-    return _InspectedVideo(
-        width=int(stream["width"]),
-        height=int(stream["height"]),
-        media=InspectedMedia(frames),
-    )
-
-
 def inspect_media(video: Path) -> InspectedMedia:
     """Inspect ordered decoded video frames without FPS-based reconstruction."""
 
-    return _inspect_video(video).media
+    return _as_inspected_media(inspect_source_frame_index(video).frames)
+
+
+def _as_inspected_media(frames: tuple[IndexedFrame, ...]) -> InspectedMedia:
+    return InspectedMedia(
+        tuple(
+            DecodedFrame(
+                frame.stream_index,
+                frame.ordinal,
+                frame.pts,
+                frame.time_base,
+            )
+            for frame in frames
+        )
+    )
 
 
 def inspect_comparison_source(video: Path) -> ComparisonSource:
     """Inspect exact frames and source geometry for comparison planning."""
 
-    inspected = _inspect_video(video)
+    inspected = inspect_source_frame_index(video)
     return ComparisonSource(
         path=video,
         width=inspected.width,
         height=inspected.height,
-        inspected_media=inspected.media,
+        inspected_media=_as_inspected_media(inspected.frames),
     )
 
 
@@ -148,44 +115,6 @@ class PlayerLocator(Protocol):
     def find_box(self, image: Path, /) -> tuple[int, int, int, int] | None: ...
 
 
-def _decode_frames(
-    source: Path,
-    ordinals: tuple[int, ...],
-    output_directory: Path,
-) -> dict[int, Path]:
-    unique_ordinals = tuple(sorted(set(ordinals)))
-    if not unique_ordinals:
-        return {}
-    selection = _balanced_addition(
-        [f"eq(n\\,{ordinal})" for ordinal in unique_ordinals]
-    )
-    output_pattern = output_directory / "frame_%09d.png"
-    _run_media_command(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-noautorotate",
-            "-i",
-            str(source),
-            "-map",
-            "0:v:0",
-            "-vf",
-            f"select={selection}",
-            "-fps_mode",
-            "passthrough",
-            "-start_number",
-            "0",
-            str(output_pattern),
-            "-y",
-        ]
-    )
-    paths = tuple(sorted(output_directory.glob("frame_*.png")))
-    if len(paths) != len(unique_ordinals):
-        raise ValueError("failed to decode every requested source frame")
-    return dict(zip(unique_ordinals, paths))
-
-
 def _balanced_addition(terms: list[str]) -> str:
     """Build a shallow FFmpeg expression tree for a non-empty sum."""
 
@@ -207,21 +136,13 @@ def observe_players(
     window: SelectedSourceWindow,
     locator: PlayerLocator,
 ) -> tuple[PlayerObservation, ...]:
-    """Sample player bounds across every unique frame in a selected window."""
+    """Locate a player from sparse, consumer-sized frames in one window."""
 
-    ordinals = tuple(item.frame.ordinal for item in window.normalized_frames)
-    with tempfile.TemporaryDirectory() as directory:
-        decoded = _decode_frames(window.source.path, ordinals, Path(directory))
-        observations: list[PlayerObservation] = []
-        for ordinal in sorted(decoded):
-            box = locator.find_box(decoded[ordinal])
-            if box is None:
-                continue
-            x1, y1, x2, y2 = box
-            observations.append(
-                PlayerObservation(ordinal, Rectangle(x1, y1, x2 - x1, y2 - y1))
-            )
-    return tuple(observations)
+    workspace = DecodedFrameWorkspace()
+    try:
+        return workspace.observe_players_many((window,), locator)[0]
+    finally:
+        workspace.close()
 
 
 def _sampled_player_ordinals(window: SelectedSourceWindow) -> tuple[int, ...]:
@@ -267,8 +188,14 @@ def _observations_from_decoded(
     sampled: tuple[tuple[int, ...], ...],
     locator: PlayerLocator,
     decoded: dict[int, Path],
+    source_width: int,
+    source_height: int,
 ) -> tuple[tuple[PlayerObservation, ...], ...]:
     ordinals = tuple(sorted({ordinal for group in sampled for ordinal in group}))
+    with Image.open(decoded[ordinals[0]]) as sample_image:
+        decoded_width, decoded_height = sample_image.size
+    x_scale = Fraction(source_width, decoded_width)
+    y_scale = Fraction(source_height, decoded_height)
     boxes = _find_player_boxes(
         locator,
         tuple(decoded[ordinal] for ordinal in ordinals),
@@ -282,6 +209,10 @@ def _observations_from_decoded(
             if box is None:
                 continue
             x1, y1, x2, y2 = box
+            x1 = round(x1 * x_scale)
+            y1 = round(y1 * y_scale)
+            x2 = round(x2 * x_scale)
+            y2 = round(y2 * y_scale)
             observations.append(
                 PlayerObservation(ordinal, Rectangle(x1, y1, x2 - x1, y2 - y1))
             )
@@ -290,7 +221,7 @@ def _observations_from_decoded(
 
 
 class DecodedFrameWorkspace:
-    """Share exact decoded frames across observation and artifact rendering."""
+    """Retain consumer-sized player-observation frames for each source."""
 
     def __init__(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
@@ -306,46 +237,47 @@ class DecodedFrameWorkspace:
         source = windows[0].source.path
         if any(window.source.path != source for window in windows):
             raise ValueError("player-observation windows must share one source")
-        all_ordinals = tuple(
-            sorted(
-                {
-                    frame.frame.ordinal
-                    for window in windows
-                    for frame in window.normalized_frames
-                }
-            )
-        )
-        decoded = self._frames(source, all_ordinals)
         sampled = tuple(_sampled_player_ordinals(window) for window in windows)
-        _LOG.info(
-            "Running player detection on %d sampled frames from %d decoded frames",
-            len({ordinal for group in sampled for ordinal in group}),
-            len(all_ordinals),
+        sampled_ordinals = {ordinal for group in sampled for ordinal in group}
+        all_frames_by_ordinal = {
+            frame.frame.ordinal: frame.frame
+            for window in windows
+            for frame in window.normalized_frames
+            if frame.frame.ordinal in sampled_ordinals
+        }
+        sampled_frames = tuple(
+            all_frames_by_ordinal[ordinal]
+            for ordinal in sorted(all_frames_by_ordinal)
         )
-        return _observations_from_decoded(sampled, locator, decoded)
-
-    def render_artifacts(
-        self,
-        plans: tuple[ComparisonRenderPlan, ...],
-        compilation: Path,
-        clips: tuple[Path, ...],
-    ) -> None:
-        render_comparison_artifacts(
-            plans,
-            compilation,
-            clips,
-            decoded_sources=self._decoded,
+        decoded = self._frames(source, sampled_frames)
+        _LOG.info(
+            "Running player detection on %d consumer-sized sampled frames",
+            len(sampled_frames),
+        )
+        source_geometry = windows[0].source
+        return _observations_from_decoded(
+            sampled,
+            locator,
+            decoded,
+            source_geometry.width,
+            source_geometry.height,
         )
 
     def _frames(
-        self, source: Path, ordinals: tuple[int, ...]
+        self, source: Path, frames: tuple[DecodedFrame, ...]
     ) -> dict[int, Path]:
         decoded = self._decoded.get(source)
         if decoded is None:
             directory = Path(self._temporary.name) / f"source_{len(self._decoded):02d}"
             directory.mkdir()
-            decoded = _decode_frames(source, ordinals, directory)
+            decoded = decode_exact_frame_windows(
+                source,
+                frames,
+                directory,
+                max_dimension=1280,
+            )
             self._decoded[source] = decoded
+        ordinals = {frame.ordinal for frame in frames}
         missing = set(ordinals) - decoded.keys()
         if missing:
             raise ValueError(
@@ -357,59 +289,25 @@ class DecodedFrameWorkspace:
         self._temporary.cleanup()
 
 
-def _render_panel(image_path: Path, crop: Rectangle, panel: Rectangle) -> Image.Image:
-    with Image.open(image_path) as image:
-        cropped = image.crop(
-            (crop.x, crop.y, crop.x + crop.width, crop.y + crop.height)
-        )
-        return cropped.resize(
-            (panel.width, panel.height), Image.Resampling.LANCZOS
-        ).convert("RGB")
-
-
 def _panel_key(
     ordinal: int, crop: Rectangle, panel: Rectangle
 ) -> tuple[int, Rectangle, int, int]:
     return ordinal, crop, panel.width, panel.height
 
 
-def _prepare_panels(
-    decoded: dict[int, Path],
-    requests: set[tuple[int, Rectangle, int, int]],
-    output_directory: Path,
-) -> dict[tuple[int, Rectangle, int, int], Path]:
-    output_directory.mkdir()
-    prepared = {}
-    for index, key in enumerate(
-        sorted(
-            requests,
-            key=lambda item: (
-                item[0],
-                item[1].x,
-                item[1].y,
-                item[1].width,
-                item[1].height,
-                item[2],
-                item[3],
-            ),
-        )
-    ):
-        ordinal, crop, width, height = key
-        destination = output_directory / f"panel_{index:09d}.png"
-        panel = Rectangle(0, 0, width, height)
-        image = _render_panel(decoded[ordinal], crop, panel)
-        try:
-            image.save(destination)
-        finally:
-            image.close()
-        prepared[key] = destination
-    return prepared
+@dataclass(frozen=True)
+class _PanelDecodeTask:
+    role: Literal["user", "pro"]
+    source: Path
+    source_start_timestamp: Fraction
+    crop: Rectangle
+    output_size: tuple[int, int]
+    frames: tuple[DecodedFrame, ...]
 
 
 def _prepare_render_panels(
     plans: tuple[ComparisonRenderPlan, ...],
     temporary: Path,
-    decoded_sources: dict[Path, dict[int, Path]] | None = None,
 ) -> tuple[
     dict[tuple[int, Rectangle, int, int], Path],
     dict[tuple[int, Rectangle, int, int], Path],
@@ -431,36 +329,103 @@ def _prepare_render_panels(
         for plan in plans
         for event in plan.events
     }
-    if decoded_sources is None:
-        user_directory = temporary / "user_frames"
-        pro_directory = temporary / "pro_frames"
-        user_directory.mkdir()
-        pro_directory.mkdir()
-        _LOG.info(
-            "Decoding %d distinct user frames in one source traversal",
-            len({request[0] for request in user_requests}),
-        )
-        user_frames = _decode_frames(
-            user_source,
-            tuple(request[0] for request in user_requests),
-            user_directory,
-        )
-        _LOG.info(
-            "Decoding %d distinct pro frames in one source traversal",
-            len({request[0] for request in pro_requests}),
-        )
-        pro_frames = _decode_frames(
-            pro_source,
-            tuple(request[0] for request in pro_requests),
-            pro_directory,
-        )
-    else:
-        user_frames = decoded_sources[user_source]
-        pro_frames = decoded_sources[pro_source]
-    return (
-        _prepare_panels(user_frames, user_requests, temporary / "user_panels"),
-        _prepare_panels(pro_frames, pro_requests, temporary / "pro_panels"),
+    requested_user_frames = {
+        event.user_frame.ordinal: event.user_frame
+        for plan in plans
+        for event in plan.events
+    }
+    requested_pro_frames = {
+        event.pro_frame.ordinal: event.pro_frame
+        for plan in plans
+        for event in plan.events
+    }
+
+    def transform_tasks(
+        role: Literal["user", "pro"],
+        source: Path,
+        source_start_timestamp: Fraction,
+        requests: set[tuple[int, Rectangle, int, int]],
+        frames_by_ordinal: dict[int, DecodedFrame],
+    ) -> list[_PanelDecodeTask]:
+        grouped: dict[tuple[Rectangle, int, int], set[int]] = {}
+        for ordinal, crop, width, height in requests:
+            grouped.setdefault((crop, width, height), set()).add(ordinal)
+        return [
+            _PanelDecodeTask(
+                role,
+                source,
+                source_start_timestamp,
+                crop,
+                (width, height),
+                tuple(frames_by_ordinal[ordinal] for ordinal in sorted(ordinals)),
+            )
+            for (crop, width, height), ordinals in sorted(
+                grouped.items(),
+                key=lambda item: (
+                    item[0][0].x,
+                    item[0][0].y,
+                    item[0][0].width,
+                    item[0][0].height,
+                    item[0][1],
+                    item[0][2],
+                ),
+            )
+        ]
+
+    tasks = transform_tasks(
+        "user",
+        user_source,
+        plans[0].user.window.source.inspected_media.frames[0].timestamp,
+        user_requests,
+        requested_user_frames,
+    ) + transform_tasks(
+        "pro",
+        pro_source,
+        plans[0].pro.window.source.inspected_media.frames[0].timestamp,
+        pro_requests,
+        requested_pro_frames,
     )
+    _LOG.info(
+        "Decoding %d requested panels directly at output size in %d transform task(s)",
+        len(user_requests) + len(pro_requests),
+        len(tasks),
+    )
+    started = monotonic()
+
+    def prepare_task(
+        item: tuple[int, _PanelDecodeTask],
+    ) -> tuple[Literal["user", "pro"], dict]:
+        index, task = item
+        decoded = decode_exact_frame_windows(
+            task.source,
+            task.frames,
+            temporary / f"{task.role}_panels_{index:03d}",
+            max_workers=1,
+            source_start_timestamp=task.source_start_timestamp,
+            crop=(task.crop.x, task.crop.y, task.crop.width, task.crop.height),
+            output_size=task.output_size,
+        )
+        width, height = task.output_size
+        return task.role, {
+            _panel_key(ordinal, task.crop, Rectangle(0, 0, width, height)): path
+            for ordinal, path in decoded.items()
+        }
+
+    workers = min(4, len(tasks))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        results = tuple(executor.map(prepare_task, enumerate(tasks)))
+    user_panels = {
+        key: path for role, panels in results if role == "user" for key, path in panels.items()
+    }
+    pro_panels = {
+        key: path for role, panels in results if role == "pro" for key, path in panels.items()
+    }
+    _LOG.info(
+        "Finished direct panel decode: %d panels in %.1fs",
+        len(user_panels) + len(pro_panels),
+        monotonic() - started,
+    )
+    return user_panels, pro_panels
 
 
 def _render_plan_event_images(
@@ -641,10 +606,8 @@ def render_comparison_artifacts(
     plans: tuple[ComparisonRenderPlan, ...],
     compilation: Path,
     clips: tuple[Path, ...],
-    *,
-    decoded_sources: dict[Path, dict[int, Path]] | None = None,
 ) -> None:
-    """Render all artifacts from one decoded and prepared frame set."""
+    """Render all artifacts from one set of consumer-sized panels."""
 
     if not plans:
         raise ValueError("at least one comparison plan is required")
@@ -663,9 +626,7 @@ def render_comparison_artifacts(
     compilation.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as directory:
         temporary = Path(directory)
-        user_panels, pro_panels = _prepare_render_panels(
-            plans, temporary, decoded_sources
-        )
+        user_panels, pro_panels = _prepare_render_panels(plans, temporary)
         compilation_events = temporary / "compilation_events"
         compilation_events.mkdir()
         ticks = _materialize_compilation_events(

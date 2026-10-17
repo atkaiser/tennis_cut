@@ -580,6 +580,7 @@ def detect_comparison_user_swings(
     frame_timeline: FrameTimeline | None = None,
     contact_selector: VisualContactSelector | None = None,
     diagnostics: SwingDiagnosticsRecorder | None = None,
+    required_shot_type: str | None = None,
 ) -> tuple[DetectedSwing, ...]:
     """Detect accepted swings and replace audio timing with visual contact.
 
@@ -588,13 +589,56 @@ def detect_comparison_user_swings(
     ``detect_user_swings_for_legacy`` and therefore retain audio-derived timing.
     """
 
+    media_info = probe_video(user_video)
     details = _detect_user_swings_with_details(
         user_video,
         detection_config,
-        probe_video(user_video),
+        media_info,
         report_progress=False,
         diagnostics=diagnostics,
     )
+    eligible_details = []
+    omissions: Counter[str] = Counter()
+    for detail in details:
+        if required_shot_type is None or detail.swing.shot_type == required_shot_type:
+            eligible_details.append(detail)
+            continue
+        reason = (
+            f"shot type {detail.swing.shot_type or 'unclassified'} does not match "
+            f"pro shot type {required_shot_type}"
+        )
+        omissions[reason] += 1
+        candidate_index = (
+            detail.audio_candidate_index
+            if detail.audio_candidate_index is not None
+            else detail.swing.ordinal
+        )
+        _LOG.info(
+            "Audio candidate %d at %.3fs omitted before visual contact: %s",
+            candidate_index,
+            detail.legacy_contact,
+            reason,
+        )
+        if diagnostics is not None:
+            diagnostics.omit(candidate_index, reason)
+    if len(eligible_details) != len(details):
+        _LOG.info(
+            "Skipping visual contact for %d of %d candidate(s) that do not match %s",
+            len(details) - len(eligible_details),
+            len(details),
+            required_shot_type,
+        )
+    if not eligible_details:
+        _LOG.info(
+            "visual contact selection: candidates=%d accepted=0 omitted=%d (%s)",
+            len(details),
+            sum(omissions.values()),
+            ", ".join(
+                f"{reason}={count}" for reason, count in sorted(omissions.items())
+            )
+            or "none",
+        )
+        return ()
     if contact_selector is None:
         ranker = None
         if detection_config.temporal_ranker_model is not None:
@@ -605,11 +649,12 @@ def detect_comparison_user_swings(
             device=detection_config.device,
             ranker=ranker,
             frame_timeline=frame_timeline,
+            source_size=media_info["resolution"],
         )
     else:
         selector = contact_selector
     candidate_timestamps = tuple(
-        _exact_contact_timestamp(detail.legacy_contact) for detail in details
+        _exact_contact_timestamp(detail.legacy_contact) for detail in eligible_details
     )
     select_many = getattr(type(selector), "select_many", None)
     if callable(select_many):
@@ -619,11 +664,10 @@ def detect_comparison_user_swings(
             selector.select(user_video, candidate_timestamp)
             for candidate_timestamp in candidate_timestamps
         )
-    if len(selections) != len(details):
+    if len(selections) != len(eligible_details):
         raise ValueError("visual contact selector returned the wrong result count")
     accepted: list[DetectedSwing] = []
-    omissions: Counter[str] = Counter()
-    for detail, selection in zip(details, selections, strict=True):
+    for detail, selection in zip(eligible_details, selections, strict=True):
         candidate_index = (
             detail.audio_candidate_index
             if detail.audio_candidate_index is not None

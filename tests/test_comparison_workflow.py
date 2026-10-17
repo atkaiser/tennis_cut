@@ -80,7 +80,10 @@ class ZeroComparisonDependencies:
         return ProSelection(pro_video, inspected_media.frames[15], "forehand")
 
     def detect_swings(
-        self, request: ComparisonRequest, user_source: ComparisonSource
+        self,
+        request: ComparisonRequest,
+        user_source: ComparisonSource,
+        required_shot_type: str,
     ) -> tuple[DetectedSwing, ...]:
         self.events.append("detect")
         return ()
@@ -166,11 +169,11 @@ class SystemDependencyProgressTests(unittest.TestCase):
 
         self.assertEqual(result, source)
         self.assertTrue(
-            any("Inspecting video metadata: user.mov" in entry for entry in logs.output)
+            any("Indexing source frames: user.mov" in entry for entry in logs.output)
         )
         self.assertTrue(
             any(
-                "Finished video metadata: user.mov (31 frames, 1920x1080)" in entry
+                "Finished source-frame index: user.mov (31 frames, 1920x1080)" in entry
                 for entry in logs.output
             )
         )
@@ -188,12 +191,13 @@ class SystemDependencyProgressTests(unittest.TestCase):
             "tennis_cut.comparison.workflow.detect_comparison_user_swings",
             return_value=(),
         ) as detect:
-            result = dependencies.detect_swings(request, source)
+            result = dependencies.detect_swings(request, source, "forehand")
 
         self.assertEqual(result, ())
         self.assertIs(
             detect.call_args.kwargs["frame_timeline"], source.inspected_media
         )
+        self.assertEqual(detect.call_args.kwargs["required_shot_type"], "forehand")
 
 
 class MatchingDependencies(ZeroComparisonDependencies):
@@ -204,7 +208,10 @@ class MatchingDependencies(ZeroComparisonDependencies):
         self.locator_creations = 0
 
     def detect_swings(
-        self, request: ComparisonRequest, user_source: ComparisonSource
+        self,
+        request: ComparisonRequest,
+        user_source: ComparisonSource,
+        required_shot_type: str,
     ) -> tuple[DetectedSwing, ...]:
         self.events.append("detect")
         return (
@@ -275,7 +282,10 @@ class FailedDetectionDependencies(ZeroComparisonDependencies):
         return ProSelection(pro_video, inspected_media.frames[15], "forehand")
 
     def detect_swings(
-        self, request: ComparisonRequest, user_source: ComparisonSource
+        self,
+        request: ComparisonRequest,
+        user_source: ComparisonSource,
+        required_shot_type: str,
     ) -> tuple[DetectedSwing, ...]:
         raise OSError("model could not load")
 
@@ -439,6 +449,7 @@ class CompareVideosTests(unittest.TestCase):
                     self,
                     request: ComparisonRequest,
                     user_source: ComparisonSource,
+                    required_shot_type: str,
                 ) -> tuple[DetectedSwing, ...]:
                     raise AssertionError("unsupported pro shot must stop before detection")
 
