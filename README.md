@@ -9,6 +9,18 @@ To process a video do this:
 4. Run the following command from the root of this directory: `uv sync && uv run tennis-cut -v to_process_vids`
 (For timing, for 1080p it takes around 2 sec per a hit, and for 4k, about 7 sec per a hit)
 
+Swing extraction writes constant 60-fps clips and bounds FFmpeg decoder and
+encoder threads and encoder lookahead to limit memory use with 4K high-frame-rate
+inputs. The default `--slowmo 0.0625` produces 1/16-speed playback; use
+`--slowmo 0.25` for quarter speed. A 1.9-second swing therefore produces
+30.4 seconds of output by default, or 7.6 seconds at quarter speed.
+
+If FFmpeg exits with `SIGKILL` (return code -9), check the Linux host's kernel
+logs for an out-of-memory kill and the container's memory limit. In cgroup v2,
+`/sys/fs/cgroup/memory.events` reports an `oom_kill` counter. Memory must also
+accommodate the loaded detection models and full-resolution video buffers;
+bounded extraction settings do not guarantee a run fits every container limit.
+
 ## Directory overview
 
 - `videos/` – this has all the training videos for the project, too keep the file size down I

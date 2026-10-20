@@ -20,10 +20,11 @@ COPY pyproject.toml uv.lock ./
 # --frozen uses uv.lock exactly (good for reproducibility)
 RUN uv venv .venv && \
     . .venv/bin/activate && \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev --no-install-project
 
 # Now copy the rest of the repo
 COPY . .
+RUN uv sync --frozen --no-dev
 
 # Make the venv the default Python
 ENV PATH="/app/.venv/bin:${PATH}"
