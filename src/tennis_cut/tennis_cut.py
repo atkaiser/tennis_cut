@@ -166,10 +166,6 @@ def cut_swing(
 
     cmd = [
         "ffmpeg",
-        "-filter_threads",
-        "1",
-        "-threads",
-        "2",
         "-ss",
         str(start),
         "-t",
@@ -186,10 +182,6 @@ def cut_swing(
         if not 0 < slowmo <= 1:
             raise ValueError("slowmo must be in (0, 1]")
         v_filters.append(f"setpts={1 / slowmo:.6f}*(PTS-STARTPTS)")
-
-    # Set cadence after stretching timestamps; do not inherit the source's
-    # high-speed frame rate or let FFmpeg infer it from the stream time base.
-    v_filters.append("fps=60")
 
     if v_filters:
         cmd += ["-filter:v", ",".join(v_filters)]
@@ -213,14 +205,6 @@ def cut_swing(
     cmd += [
         "-c:v",
         "libx264",
-        "-threads:v",
-        "2",
-        "-x264-params",
-        "rc-lookahead=8:sync-lookahead=0",
-        "-r",
-        "60",
-        "-fps_mode",
-        "cfr",
         "-crf",
         "18",
         str(out_path),
